@@ -304,17 +304,10 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+def _host_only(host_header: str) -> str:
+    """Return a lower-cased host without any port suffix."""
     if not host_header:
-        return False
+        return ""
     # Strip port suffix. IPv6 addresses use bracket notation:
     #   [::1]         — no port
     #   [::1]:9119    — with port
@@ -331,7 +324,45 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.lower()
+
+
+def _configured_loopback_proxy_hosts() -> frozenset[str]:
+    """Operator-approved public Host headers for loopback reverse proxies.
+
+    This keeps the dashboard itself bound to 127.0.0.1 while allowing a
+    trusted local reverse proxy such as Tailscale Serve to terminate HTTPS at
+    a tailnet hostname and forward to the loopback dashboard. Values come from
+    HERMES_DASHBOARD_PROXY_HOSTS as a comma-separated hostname list.
+    """
+    raw = os.getenv("HERMES_DASHBOARD_PROXY_HOSTS", "")
+    return frozenset(filter(None, (_host_only(part) for part in raw.split(","))))
+
+
+def _client_is_loopback_host(client_host: str | None) -> bool:
+    return (client_host or "").strip().lower() in _LOOPBACK_HOST_VALUES
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    *,
+    loopback_proxy_hosts: frozenset[str] | None = None,
+    client_host: str | None = None,
+) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Operator-approved loopback reverse-proxy hosts, but only when the
+      dashboard is bound to loopback and the immediate peer is loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    """
+    host_only = _host_only(host_header)
+    if not host_only:
+        return False
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -339,10 +370,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names plus any explicitly configured
+    # reverse-proxy hosts when the proxy itself connects from loopback.
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        if (
+            loopback_proxy_hosts
+            and host_only in loopback_proxy_hosts
+            and _client_is_loopback_host(client_host)
+        ):
+            return True
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -365,7 +405,12 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(
+            host_header,
+            bound_host,
+            loopback_proxy_hosts=_configured_loopback_proxy_hosts(),
+            client_host=(request.client.host if request.client else None),
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -9896,7 +9941,14 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    loopback_proxy_hosts = _configured_loopback_proxy_hosts()
+    client_host = ws.client.host if ws.client else None
+    if not _is_accepted_host(
+        host_header,
+        bound_host,
+        loopback_proxy_hosts=loopback_proxy_hosts,
+        client_host=client_host,
+    ):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -9913,7 +9965,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(
+        parsed.netloc,
+        bound_host,
+        loopback_proxy_hosts=loopback_proxy_hosts,
+        client_host=client_host,
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 
