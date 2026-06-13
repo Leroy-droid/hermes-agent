@@ -32,6 +32,7 @@ import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { MobileChatSurface } from "@/components/MobileChatSurface";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -183,6 +184,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- changing resume/profile intentionally creates a fresh event channel.
   const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
 
   useEffect(() => {
@@ -293,6 +295,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    // Phone-width chat uses the structured Gateway UI instead of the embedded
+    // xterm/TUI surface.  That keeps mobile from feeling like a CLI while the
+    // desktop route preserves the full terminal-style TUI experience.
+    if (narrow) return;
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -724,7 +731,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- terminalTheme changes are applied by the dedicated theme-sync effect below; do not rebuild the PTY on theme switch.
+  }, [channel, resumeParam, scopedProfile, narrow]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -849,7 +857,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              className="hermes-ios-tap h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
             >
               <X />
             </Button>
@@ -880,46 +888,54 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
-          <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+        {narrow ? (
+          <MobileChatSurface
+            active={isActive}
+            profile={scopedProfile}
+            resume={resumeParam}
           />
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+        ) : (
+          <div
             className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
+              "p-2 sm:p-3",
             )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            style={{
+              backgroundColor: terminalBg,
+              boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+            <div
+              ref={hostRef}
+              className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            />
+
+            <Button
+              ghost
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
+                "lg:bottom-4 lg:right-4",
+              )}
+              style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
               </span>
-            </span>
-          </Button>
-        </div>
+            </Button>
+          </div>
+        )}
 
         {!narrow && (
           <div

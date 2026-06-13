@@ -1,0 +1,19 @@
+{
+  "name": "Hermes Agent",
+  "short_name": "Hermes",
+  "description": "Private Hermes Agent dashboard for chat, sessions, and approvals.",
+  "start_url": "/chat",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#041c1c",
+  "theme_color": "#041c1c",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "/icons/hermes-icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

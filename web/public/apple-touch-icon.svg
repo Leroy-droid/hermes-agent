@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 180" role="img" aria-label="Hermes">
+  <rect width="180" height="180" rx="40" fill="#041c1c"/>
+  <path d="M39 122c18-43 34-64 51-64s33 21 51 64" fill="none" stroke="#ffe6cb" stroke-width="12" stroke-linecap="round"/>
+  <path d="M54 69c11-18 23-27 36-27s25 9 36 27" fill="none" stroke="#34d399" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="90" cy="92" r="15" fill="#ffe6cb"/>
+  <path d="M70 128h40" stroke="#ffe6cb" stroke-width="10" stroke-linecap="round"/>
+</svg>

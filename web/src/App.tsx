@@ -101,7 +101,13 @@ import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  const mobileLike =
+    typeof window !== "undefined" &&
+    (window.matchMedia("(max-width: 1023px)").matches ||
+      window.matchMedia("(display-mode: standalone)").matches ||
+      Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone));
+
+  return <Navigate to={mobileLike ? "/chat" : "/sessions"} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -223,6 +229,8 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Code,
   Eye,
 };
+
+const MOBILE_DOCK_PATHS = ["/chat", "/sessions", "/models", "/cron"];
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
@@ -452,6 +460,21 @@ export default function App() {
     [manifests],
   );
 
+  const mobileDockItems = useMemo(() => {
+    const byPath = new Map(builtinNav.map((item) => [item.path, item]));
+    return MOBILE_DOCK_PATHS
+      .map((path) => byPath.get(path))
+      .filter((item): item is NavItem => Boolean(item));
+  }, [builtinNav]);
+
+  const currentMobileLabel = useMemo(() => {
+    const current = builtinNav.find((item) => item.path === normalizedPath);
+    if (!current) return t.app.brand;
+    return current.labelKey
+      ? ((t.app.nav as Record<string, string>)[current.labelKey] ?? current.label)
+      : current.label;
+  }, [builtinNav, normalizedPath, t]);
+
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
@@ -489,16 +512,9 @@ export default function App() {
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-          "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
+          "lg:hidden fixed left-3 right-3 top-[calc(0.55rem+env(safe-area-inset-top,0px))] z-40 min-h-12",
+          "hermes-ios-surface flex items-center gap-2 rounded-full px-2.5 py-2",
         )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
       >
         <Button
           ghost
@@ -507,17 +523,24 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+          className="hermes-ios-tap h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
         >
-          <Menu />
+          <Menu className="h-5 w-5" />
         </Button>
 
-        <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
-        >
-          {t.app.brand}
-        </Typography>
+        <div className="min-w-0 flex-1">
+          <Typography
+            className="truncate text-[0.95rem] font-semibold leading-tight tracking-[-0.015em] text-midground"
+            style={{ mixBlendMode: "plus-lighter" }}
+          >
+            {currentMobileLabel}
+          </Typography>
+          <div className="truncate text-[0.68rem] leading-tight text-text-secondary">
+            Hermes mobile
+          </div>
+        </div>
+
+        <div className="mr-1 h-2.5 w-2.5 rounded-full bg-success shadow-[0_0_18px_rgba(74,222,128,0.7)]" />
       </header>
 
       {mobileOpen && (
@@ -526,8 +549,8 @@ export default function App() {
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
+            "lg:hidden fixed inset-0 z-40 block p-0",
+            "bg-black/55 backdrop-blur-md transition-opacity duration-300",
           )}
         />
       )}
@@ -535,24 +558,25 @@ export default function App() {
       <PluginSlot name="header-banner" />
       <ProfileScopeBanner />
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[calc(4.25rem+env(safe-area-inset-top,0px))] lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            data-open={mobileOpen ? "true" : "false"}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
+              "hermes-mobile-panel fixed left-3 top-[calc(0.75rem+env(safe-area-inset-top,0px))] z-50 flex h-[calc(100dvh-1.5rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] max-h-dvh w-[min(20rem,calc(100vw-1.5rem))] min-h-0 flex-col overflow-hidden rounded-[2rem]",
               "border-r border-current/20",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-[transform] duration-200 ease-out",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+              "transition-[transform,opacity] duration-300 ease-[cubic-bezier(0.2,1.15,0.34,1)]",
+              mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-full opacity-0",
+              "lg:sticky lg:left-0 lg:top-0 lg:h-dvh lg:w-64 lg:rounded-none lg:translate-x-0 lg:opacity-100 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
               collapsed && "lg:w-14",
             )}
             style={{
               background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
+              clipPath: isMobile ? undefined : "var(--component-sidebar-clip-path)",
               borderImage: "var(--component-sidebar-border-image)",
             }}
           >
@@ -586,7 +610,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
+                className="hermes-ios-tap lg:hidden h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
               >
                 <X />
               </Button>
@@ -720,7 +744,7 @@ export default function App() {
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "px-3 sm:px-6",
                 isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                  ? "pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] pt-1 sm:pt-2 lg:pb-0 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
@@ -783,6 +807,15 @@ export default function App() {
         </div>
       </div>
 
+      {isMobile && (
+        <MobileBottomDock
+          items={mobileDockItems}
+          moreOpen={mobileOpen}
+          onMore={() => setMobileOpen(true)}
+          t={t}
+        />
+      )}
+
       <PluginSlot name="overlay" />
     </div>
     </ProfileProvider>
@@ -799,6 +832,56 @@ export default function App() {
  * the new scope. The persistent ChatPage host below handles its own
  * remount (channel keyed on scopedProfile).
  */
+function MobileBottomDock({ items, moreOpen, onMore, t }: MobileBottomDockProps) {
+  return (
+    <nav
+      aria-label="Primary mobile navigation"
+      className="hermes-mobile-dock hermes-ios-surface lg:hidden fixed bottom-[calc(0.65rem+env(safe-area-inset-bottom,0px))] left-3 right-3 z-40 flex items-center justify-between gap-1 rounded-[1.55rem] px-2 py-2"
+    >
+      {items.map((item) => {
+        const Icon = item.icon;
+        const label = item.labelKey
+          ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+          : item.label;
+        return (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            end={item.path === "/sessions"}
+            className={({ isActive }) =>
+              cn(
+                "hermes-ios-tap flex min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[1.2rem] px-2 py-2 text-[0.62rem] font-medium leading-none tracking-[-0.01em]",
+                isActive
+                  ? "bg-midground text-background-base shadow-[0_10px_28px_rgba(255,230,203,0.18)]"
+                  : "text-text-secondary hover:bg-midground/8 hover:text-midground",
+              )
+            }
+          >
+            <Icon className="h-[1.125rem] w-[1.125rem]" />
+            <span className="max-w-full truncate">{label}</span>
+          </NavLink>
+        );
+      })}
+
+      <Button
+        ghost
+        onClick={onMore}
+        aria-expanded={moreOpen}
+        aria-controls="app-sidebar"
+        className={cn(
+          "hermes-ios-tap flex h-auto min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[1.2rem] px-2 py-2 text-[0.62rem] font-medium leading-none tracking-[-0.01em]",
+          moreOpen
+            ? "bg-midground text-background-base shadow-[0_10px_28px_rgba(255,230,203,0.18)]"
+            : "text-text-secondary hover:bg-midground/8 hover:text-midground",
+        )}
+      >
+        <Menu className="h-[1.125rem] w-[1.125rem]" />
+        <span>More</span>
+      </Button>
+    </nav>
+  );
+}
+
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
   return <div key={profile || "__own__"} className="contents">{children}</div>;
@@ -812,8 +895,7 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
-  const liRef = useRef<HTMLLIElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
@@ -821,27 +903,26 @@ function SidebarNavLink({
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <NavLink
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
         aria-label={collapsed ? navLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+        onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
         className={({ isActive }) =>
           cn(
-            "group/nav relative flex items-center gap-3",
-            "px-5 py-2.5",
+            "group/nav hermes-ios-tap relative flex items-center gap-3 rounded-2xl",
+            "mx-2 px-4 py-3 lg:mx-0 lg:rounded-none lg:px-5 lg:py-2.5",
             "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
             isActive
-              ? "text-midground"
-              : "text-text-secondary hover:text-midground",
+              ? "bg-midground/12 text-midground lg:bg-transparent"
+              : "text-text-secondary hover:bg-midground/8 hover:text-midground lg:hover:bg-transparent",
           )
         }
         style={{
@@ -877,8 +958,8 @@ function SidebarNavLink({
         )}
       </NavLink>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={navLabel} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -971,34 +1052,32 @@ function SystemActionButton({
   tooltipWarmRef,
 }: SystemActionButtonProps) {
   const { icon: Icon, label, runningLabel, spin } = item;
-  const liRef = useRef<HTMLLIElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <button
         onClick={onClick}
         disabled={disabled}
         aria-busy={busy}
         aria-label={collapsed ? displayLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+        onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
         type="button"
         className={cn(
-          "group/action relative flex w-full items-center gap-3",
-          "px-5 py-2.5",
+          "group/action hermes-ios-tap relative flex w-full items-center gap-3 rounded-2xl",
+          "mx-2 px-4 py-3 lg:mx-0 lg:rounded-none lg:px-5 lg:py-2.5",
           "font-mondwest text-display text-xs tracking-[0.1em]",
           "whitespace-nowrap transition-colors cursor-pointer",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
           busy
-            ? "text-midground"
-            : "text-text-secondary hover:text-midground",
+            ? "bg-midground/12 text-midground lg:bg-transparent"
+            : "text-text-secondary hover:bg-midground/8 hover:text-midground lg:hover:bg-transparent",
           "disabled:text-text-disabled disabled:cursor-not-allowed",
         )}
       >
@@ -1036,8 +1115,8 @@ function SystemActionButton({
         )}
       </button>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -1049,18 +1128,16 @@ function SidebarIconWithTooltip({
   label,
   tooltipWarmRef,
 }: SidebarIconWithTooltipProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   return (
     <div
-      ref={ref}
       className={cn(
         "relative w-fit",
         collapsed && "group/icon",
       )}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       {children}
 
@@ -1071,8 +1148,8 @@ function SidebarIconWithTooltip({
         />
       )}
 
-      {collapsed && hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
@@ -1080,8 +1157,7 @@ function SidebarIconWithTooltip({
 
 function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
-  const ref = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const toneToColor: Record<string, string> = {
     "text-success": "bg-success",
@@ -1104,7 +1180,6 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
 
   return (
     <div
-      ref={ref}
       className={cn(
         "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
         collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
@@ -1112,18 +1187,18 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
       role="status"
       aria-label={label}
       tabIndex={collapsed ? 0 : -1}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
-      onFocus={collapsed ? () => setHovered(true) : undefined}
-      onBlur={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
+      onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <span
         aria-hidden
         className={cn("h-1.5 w-1.5 rounded-full", color)}
       />
 
-      {hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
@@ -1134,7 +1209,7 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   const sidebar = document.getElementById("app-sidebar");
   const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
 
-  const isWarm = warmRef ? Date.now() - warmRef.current < 300 : false;
+  const isWarm = false;
 
   useEffect(() => {
     if (warmRef) warmRef.current = Date.now();
@@ -1178,6 +1253,13 @@ interface NavItem {
   label: string;
   labelKey?: string;
   path: string;
+}
+
+interface MobileBottomDockProps {
+  items: NavItem[];
+  moreOpen: boolean;
+  onMore: () => void;
+  t: Translations;
 }
 
 interface SidebarIconWithTooltipProps {
