@@ -250,11 +250,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
-  const [narrow, setNarrow] = useState(() =>
-    typeof window !== "undefined"
-      ? window.matchMedia("(max-width: 1023px)").matches
-      : false,
-  );
+  const forceMobile = searchParams.get("mobile") === "1";
+  const [narrow, setNarrow] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return forceMobile || window.matchMedia("(max-width: 1023px)").matches;
+  });
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -311,11 +311,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
-    const sync = () => setNarrow(mql.matches);
+    const sync = () => setNarrow(forceMobile || mql.matches);
     sync();
     mql.addEventListener("change", sync);
     return () => mql.removeEventListener("change", sync);
-  }, []);
+  }, [forceMobile]);
 
   useEffect(() => {
     if (!mobilePanelOpen) return;
@@ -902,6 +902,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
+    !forceMobile &&
     portalRoot &&
     createPortal(
       <>
@@ -974,17 +975,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <PluginSlot name="chat:top" />
+    <div className={cn("flex min-h-0 flex-1 flex-col", forceMobile ? "gap-0" : "gap-2")}>
+      {!forceMobile && <PluginSlot name="chat:top" />}
       {mobileModelToolsPortal}
 
-      {banner && (
+      {banner && !forceMobile && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
           {banner}
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
+      <div className={cn("flex min-h-0 flex-1 flex-col lg:flex-row", forceMobile ? "gap-0" : "gap-2 lg:gap-3")}>
         {narrow ? (
           <MobileChatSurface
             active={isActive}

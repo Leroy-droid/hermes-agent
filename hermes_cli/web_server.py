@@ -6337,6 +6337,235 @@ class BulkDeleteSessions(BaseModel):
     ids: List[str]
 
 
+class PinnedSessionsBody(BaseModel):
+    ids: List[str]
+
+
+_PINNED_SESSIONS_STATE_FILE = "desktop-pinned-sessions.json"
+_PINNED_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/+\\=-]{1,256}$")
+
+
+def _pinned_sessions_path() -> Path:
+    return get_hermes_home() / "runtime" / _PINNED_SESSIONS_STATE_FILE
+
+
+def _normalize_pinned_session_ids(ids: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw in ids[:200]:
+        if not isinstance(raw, str):
+            continue
+        session_id = raw.strip()
+        if not session_id or session_id in seen:
+            continue
+        if not _PINNED_SESSION_ID_RE.match(session_id):
+            continue
+        normalized.append(session_id)
+        seen.add(session_id)
+    return normalized
+
+
+def _read_pinned_session_ids() -> List[str]:
+    path = _pinned_sessions_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception:
+        _log.warning("Failed to read pinned sessions state", exc_info=True)
+        return []
+    ids = data.get("ids") if isinstance(data, dict) else data
+    if not isinstance(ids, list):
+        return []
+    return _normalize_pinned_session_ids(ids)
+
+
+def _write_pinned_session_ids(ids: List[str]) -> List[str]:
+    normalized = _normalize_pinned_session_ids(ids)
+    path = _pinned_sessions_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"ids": normalized, "updated_at": time.time()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return normalized
+
+
+@app.get("/api/sessions/pinned")
+async def get_pinned_sessions_endpoint():
+    """Shared desktop/dashboard pinned session ids.
+
+    The Electron desktop keeps its own localStorage for snappy UI, but mobile
+    dashboard routes cannot read that origin. This tiny shared list lets the
+    desktop mirror its ordered pin ids into Hermes home, and lets
+    ``/sessions?mobile=1`` render the same pinned sessions without adding any
+    model-tool or agent-core surface.
+    """
+    return {"ids": _read_pinned_session_ids()}
+
+
+@app.put("/api/sessions/pinned")
+async def put_pinned_sessions_endpoint(body: PinnedSessionsBody):
+    return {"ok": True, "ids": _write_pinned_session_ids(body.ids)}
+
+
+def _waiting_input_summary(kind: str, payload: Dict[str, Any]) -> str:
+    if kind == "approval":
+        command = str(payload.get("command") or "").strip()
+        description = str(payload.get("description") or "").strip()
+        if command:
+            return f"Approval needed: {command[:96]}"
+        return f"Approval needed{f': {description}' if description else ''}"
+    if kind == "clarify":
+        question = str(payload.get("question") or "").strip()
+        return question or "Question waiting for your answer"
+    if kind == "sudo":
+        return "Sudo password needed"
+    if kind == "secret":
+        env_var = str(payload.get("env_var") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        return f"Secret needed: {env_var}" if env_var else prompt or "Secret needed"
+    return "Input needed"
+
+
+@app.get("/api/sessions/waiting-input")
+async def get_waiting_input_sessions(limit: int = 10):
+    """Live sessions blocked on approval/clarify/sudo/secret input.
+
+    This reads the dashboard gateway's in-memory prompt queues and enriches
+    each row with the normal session shape used by the Sessions page. It is
+    deliberately live-only: prompt waits are transient and are not stored in
+    ``state.db``.
+    """
+    allowed_kinds = {"approval", "clarify", "sudo", "secret"}
+    try:
+        from hermes_state import SessionDB
+        from tui_gateway.server import list_waiting_input_sessions
+
+        waiting = [
+            row
+            for row in list_waiting_input_sessions(limit=max(1, min(int(limit or 10), 50)))
+            if str(row.get("kind") or "") in allowed_kinds
+        ]
+        db = SessionDB()
+        try:
+            rows: List[Dict[str, Any]] = []
+            for item in waiting:
+                kind = str(item.get("kind") or "input")
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                live = item.get("session") if isinstance(item.get("session"), dict) else {}
+                session_key = str(live.get("session_key") or live.get("id") or "").strip()
+                stored = db._get_session_rich_row(session_key) if session_key else None
+                summary = _waiting_input_summary(kind, payload)
+                last_active = max(
+                    float((stored or {}).get("last_active") or 0),
+                    float(live.get("last_active") or 0),
+                )
+                row = {
+                    "id": str((stored or {}).get("id") or session_key or live.get("id") or ""),
+                    "live_session_id": str(live.get("id") or ""),
+                    "source": (stored or {}).get("source") or "tui",
+                    "model": (stored or {}).get("model") or live.get("model"),
+                    "title": (stored or {}).get("title") or live.get("title"),
+                    "started_at": float((stored or {}).get("started_at") or live.get("started_at") or last_active),
+                    "ended_at": None,
+                    "last_active": last_active or time.time(),
+                    "is_active": True,
+                    "message_count": int((stored or {}).get("message_count") or live.get("message_count") or 0),
+                    "tool_call_count": int((stored or {}).get("tool_call_count") or 0),
+                    "input_tokens": int((stored or {}).get("input_tokens") or 0),
+                    "output_tokens": int((stored or {}).get("output_tokens") or 0),
+                    "preview": summary,
+                    "parent_session_id": (stored or {}).get("parent_session_id"),
+                    "pending_kind": kind,
+                    "pending_summary": summary,
+                    "pending_request_id": str(payload.get("request_id") or ""),
+                    "pending_command": str(payload.get("command") or ""),
+                    "pending_description": str(payload.get("description") or ""),
+                    "pending_question": str(payload.get("question") or ""),
+                    "pending_choices": payload.get("choices") if isinstance(payload.get("choices"), list) else [],
+                    "pending_env_var": str(payload.get("env_var") or ""),
+                    "pending_prompt": str(payload.get("prompt") or ""),
+                    "pending_allow_permanent": payload.get("allow_permanent") is not False,
+                }
+                if row["id"]:
+                    rows.append(row)
+            return {"sessions": rows, "total": len(rows), "limit": limit, "offset": 0}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/waiting-input failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _active_work_summary(live: Dict[str, Any]) -> str:
+    inflight = live.get("inflight") if isinstance(live.get("inflight"), dict) else {}
+    assistant = str(inflight.get("assistant") or "").strip()
+    user = str(inflight.get("user") or "").strip()
+    preview = str(live.get("preview") or "").strip()
+    if assistant:
+        return assistant[:160]
+    if user:
+        return f"Working on: {user[:140]}"
+    if preview:
+        return preview[:160]
+    status = str(live.get("status") or "working")
+    return f"Session is {status}"
+
+
+@app.get("/api/sessions/active-work")
+async def get_active_work_sessions(limit: int = 10):
+    """Live sessions currently starting, working, or waiting."""
+    try:
+        from hermes_state import SessionDB
+        from tui_gateway.server import list_active_work_sessions
+
+        live_rows = list_active_work_sessions(limit=max(1, min(int(limit or 10), 50)))
+        db = SessionDB()
+        try:
+            rows: List[Dict[str, Any]] = []
+            for live in live_rows:
+                session_key = str(live.get("session_key") or live.get("id") or "").strip()
+                stored = db._get_session_rich_row(session_key) if session_key else None
+                inflight = live.get("inflight") if isinstance(live.get("inflight"), dict) else {}
+                summary = _active_work_summary(live)
+                last_active = max(
+                    float((stored or {}).get("last_active") or 0),
+                    float(live.get("last_active") or 0),
+                )
+                row = {
+                    "id": str((stored or {}).get("id") or session_key or live.get("id") or ""),
+                    "live_session_id": str(live.get("id") or ""),
+                    "source": (stored or {}).get("source") or "tui",
+                    "model": (stored or {}).get("model") or live.get("model"),
+                    "title": (stored or {}).get("title") or live.get("title"),
+                    "started_at": float((stored or {}).get("started_at") or live.get("started_at") or last_active),
+                    "ended_at": None,
+                    "last_active": last_active or time.time(),
+                    "is_active": True,
+                    "message_count": int((stored or {}).get("message_count") or live.get("message_count") or 0),
+                    "tool_call_count": int((stored or {}).get("tool_call_count") or 0),
+                    "input_tokens": int((stored or {}).get("input_tokens") or 0),
+                    "output_tokens": int((stored or {}).get("output_tokens") or 0),
+                    "preview": summary,
+                    "parent_session_id": (stored or {}).get("parent_session_id"),
+                    "live_status": str(live.get("status") or "working"),
+                    "live_running": bool(live.get("running")),
+                    "live_inflight_user": str(inflight.get("user") or ""),
+                    "live_inflight_assistant": str(inflight.get("assistant") or ""),
+                }
+                if row["id"]:
+                    rows.append(row)
+            return {"sessions": rows, "total": len(rows), "limit": limit, "offset": 0}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/active-work failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
