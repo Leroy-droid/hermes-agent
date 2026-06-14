@@ -191,6 +191,24 @@ export async function listAllProfileSessions(
   }
 }
 
+export interface PinnedSessionsResponse {
+  ids: string[]
+}
+
+export function getPinnedSessions(): Promise<PinnedSessionsResponse> {
+  return window.hermesDesktop.api<PinnedSessionsResponse>({
+    path: '/api/sessions/pinned'
+  })
+}
+
+export function setPinnedSessions(ids: string[]): Promise<{ ok: boolean; ids: string[] }> {
+  return window.hermesDesktop.api<{ ok: boolean; ids: string[] }>({
+    path: '/api/sessions/pinned',
+    method: 'PUT',
+    body: { ids }
+  })
+}
+
 // Mutations take the owning `profile` so Electron routes them to that profile's
 // backend (remote pool or local primary) via request.profile — matching the
 // read path. A remote session's row lives only on its remote host, so a mutation
