@@ -4,21 +4,21 @@ type ProcessEnv = {
 
 declare const process: ProcessEnv;
 
-const tailnetServerUrl = process.env.HERMES_CAPACITOR_SERVER_URL?.trim();
+const configuredServerUrl = process.env.HERMES_CAPACITOR_SERVER_URL?.trim();
+const dashboardServerUrl = configuredServerUrl || "http://127.0.0.1:9119";
+const usesCleartextLoopback = /^http:\/\/(127\.0\.0\.1|localhost)(:\d+)?\/?$/i.test(
+  dashboardServerUrl,
+);
 
 const config = {
   appId: "ai.hermes.dashboard",
   appName: "Hermes",
   webDir: "../hermes_cli/web_dist",
   bundledWebRuntime: false,
-  ...(tailnetServerUrl
-    ? {
-        server: {
-          cleartext: false,
-          url: tailnetServerUrl,
-        },
-      }
-    : {}),
+  server: {
+    cleartext: usesCleartextLoopback,
+    url: dashboardServerUrl,
+  },
   ios: {
     contentInset: "automatic",
     preferredContentMode: "mobile",

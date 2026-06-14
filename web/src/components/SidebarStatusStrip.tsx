@@ -3,13 +3,18 @@ import type { StatusResponse } from "@/lib/api";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
+export interface GatewayLineStatus {
+  label: string;
+  tone: string;
+}
+
 /** Gateway + session summary for the System sidebar block (no separate strip chrome). */
-export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
+export function SidebarStatusStrip({ className, status }: SidebarStatusStripProps) {
   const { t } = useI18n();
 
   if (status === null) {
     return (
-      <div className="px-5 py-1.5" aria-hidden>
+      <div className={cn("px-5 py-1.5", className)} aria-hidden>
         <div className="h-2 w-[80%] max-w-full animate-pulse rounded-sm bg-midground/10" />
       </div>
     );
@@ -29,16 +34,19 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
         "transition-colors hover:text-midground",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground/40",
         "focus-visible:ring-inset",
+        className,
       )}
     >
-      <div className="flex flex-col gap-1 font-mondwest text-xs leading-snug tracking-[0.08em]">
-        <p className="break-words">
-          <span className="text-text-tertiary">{gatewayStatusLabel}</span>{" "}
+      <div className="flex flex-col gap-1 font-mondwest text-xs leading-snug tracking-[0.08em] max-lg:flex-row max-lg:items-center max-lg:justify-between max-lg:gap-2 max-lg:text-[0.62rem] max-lg:leading-none">
+        <p className="min-w-0 break-words max-lg:truncate">
+          <span className="text-text-tertiary max-lg:hidden">{gatewayStatusLabel}</span>
+          <span className="hidden text-text-tertiary max-lg:inline">Gateway</span>{" "}
           <span className={cn("font-medium", gw.tone)}>{gw.label}</span>
         </p>
 
-        <p className="break-words">
-          <span className="text-text-tertiary">{activeSessionsLabel}</span>{" "}
+        <p className="min-w-0 break-words max-lg:shrink-0 max-lg:truncate">
+          <span className="text-text-tertiary max-lg:hidden">{activeSessionsLabel}</span>
+          <span className="hidden text-text-tertiary max-lg:inline">Active</span>{" "}
           <span className="tabular-nums text-text-secondary">
             {status.active_sessions}
           </span>
@@ -48,10 +56,10 @@ export function SidebarStatusStrip({ status }: SidebarStatusStripProps) {
   );
 }
 
-export function gatewayLine(
+function gatewayLine(
   status: StatusResponse,
   t: ReturnType<typeof useI18n>["t"],
-): { label: string; tone: string } {
+): GatewayLineStatus {
   const g = t.app.gatewayStrip;
   const byState: Record<string, { label: string; tone: string }> = {
     running: { label: g.running, tone: "text-success" },
@@ -68,5 +76,6 @@ export function gatewayLine(
 }
 
 interface SidebarStatusStripProps {
+  className?: string;
   status: StatusResponse | null;
 }

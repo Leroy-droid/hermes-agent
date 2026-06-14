@@ -4,6 +4,7 @@ import {
   useState,
   useCallback,
   useRef,
+  useMemo,
 } from "react";
 import { useNavigate } from "react-router-dom";
 import {
@@ -28,6 +29,7 @@ import {
   Pencil,
   Check,
   Archive,
+  Pin,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type {
@@ -61,6 +63,7 @@ import {
 } from "@nous-research/ui/ui/components/dialog";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
+import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -68,6 +71,7 @@ import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
+    tui: { icon: Terminal, color: "text-emerald-100" },
     cli: { icon: Terminal, color: "text-primary" },
     telegram: { icon: MessageCircle, color: "text-[oklch(0.65_0.15_250)]" },
     discord: { icon: Hash, color: "text-[oklch(0.65_0.15_280)]" },
@@ -75,6 +79,53 @@ const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
     whatsapp: { icon: Globe, color: "text-success" },
     cron: { icon: Clock, color: "text-warning" },
   };
+
+const MOBILE_SESSION_TONES: Record<
+  string,
+  { badge: string; expanded: string; pinned: string; row: string }
+> = {
+  tui: {
+    badge: "border-emerald-200/22 bg-emerald-300/[0.105] text-emerald-50/85",
+    expanded: "max-sm:border-emerald-200/14 max-sm:bg-background-base/50",
+    pinned:
+      "hermes-mobile-session-pinned--teal border-emerald-200/20 bg-emerald-300/16 text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)] hover:bg-emerald-300/20",
+    row: "hermes-mobile-session-row--teal max-sm:border-emerald-200/18 max-sm:bg-background-base/50",
+  },
+  cli: {
+    badge: "border-emerald-200/22 bg-emerald-300/[0.105] text-emerald-50/85",
+    expanded: "max-sm:border-emerald-200/14 max-sm:bg-background-base/50",
+    pinned:
+      "hermes-mobile-session-pinned--teal border-emerald-200/20 bg-emerald-300/16 text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)] hover:bg-emerald-300/20",
+    row: "hermes-mobile-session-row--teal max-sm:border-emerald-200/18 max-sm:bg-background-base/50",
+  },
+  telegram: {
+    badge: "border-sky-200/22 bg-sky-300/[0.105] text-sky-50/85",
+    expanded: "max-sm:border-sky-200/14 max-sm:bg-background-base/50",
+    pinned:
+      "hermes-mobile-session-pinned--teal border-emerald-200/20 bg-emerald-300/16 text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)] hover:bg-emerald-300/20",
+    row: "hermes-mobile-session-row--sky max-sm:border-sky-200/18 max-sm:bg-background-base/50",
+  },
+  cron: {
+    badge: "border-warning/24 bg-warning/[0.105] text-warning/90",
+    expanded: "max-sm:border-warning/14 max-sm:bg-background-base/50",
+    pinned:
+      "hermes-mobile-session-pinned--teal border-emerald-200/20 bg-emerald-300/16 text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)] hover:bg-emerald-300/20",
+    row: "hermes-mobile-session-row--gold max-sm:border-warning/20 max-sm:bg-background-base/50",
+  },
+  default: {
+    badge: "border-midground/18 bg-midground/[0.075] text-text-secondary",
+    expanded: "max-sm:border-midground/12 max-sm:bg-background-base/50",
+    pinned:
+      "hermes-mobile-session-pinned--teal border-emerald-200/20 bg-emerald-300/16 text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)] hover:bg-emerald-300/20",
+    row: "hermes-mobile-session-row--neutral max-sm:border-midground/16 max-sm:bg-background-base/50",
+  },
+};
+
+function mobileSessionTone(session: SessionInfo) {
+  return (
+    MOBILE_SESSION_TONES[session.source ?? ""] ?? MOBILE_SESSION_TONES.default
+  );
+}
 
 /** Render an FTS5 snippet with highlighted matches.
  *  The backend wraps matches in >>> and <<< delimiters. */
@@ -383,6 +434,7 @@ function SessionRow({
   onDelete,
   onRename,
   onExport,
+  openInChatOnRow,
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
@@ -396,6 +448,9 @@ function SessionRow({
 
   useEffect(() => {
     if (isExpanded && messages === null && !loading) {
+      // Loading expanded history is an effect-driven fetch; keep the local
+      // loading flag adjacent to the request it guards.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setLoading(true);
       api
         .getSessionMessages(session.id)
@@ -410,6 +465,11 @@ function SessionRow({
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
+  const mobileTone = mobileSessionTone(session);
+  const openInChat = () => {
+    if (!resumeInChatEnabled) return;
+    navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+  };
 
   const submitRename = async () => {
     const value = renameValue.trim();
@@ -501,10 +561,10 @@ function SessionRow({
   // bar at the top. Beat the is_active styling — explicit user selection
   // takes priority over "this session is live".
   const containerClasses = isSelected
-    ? "border-primary/40 bg-primary/[0.06]"
+    ? "border-primary/35 bg-primary/[0.05] max-sm:border-primary/28 max-sm:bg-primary/[0.09]"
     : session.is_active
-      ? "border-success/30 bg-success/[0.03]"
-      : "border-border";
+      ? "border-success/28 bg-success/[0.025] max-sm:border-success/24 max-sm:bg-success/[0.06]"
+      : `border-border ${mobileTone.row}`;
 
   // Clicking the checkbox must NOT toggle row expansion; selection and
   // expansion are independent gestures. We bind ``onClick`` directly on
@@ -521,13 +581,13 @@ function SessionRow({
 
   return (
     <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors ${containerClasses}`}
+      className={`max-w-full min-w-0 overflow-hidden border transition-colors max-sm:min-h-[4.35rem] max-sm:shrink-0 max-sm:rounded-[0.82rem] max-sm:shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_10px_28px_rgba(0,0,0,0.1)] max-sm:backdrop-blur-md ${containerClasses}`}
     >
       <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30"
-        onClick={onToggle}
+        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30 max-sm:min-h-[4.35rem] max-sm:gap-1 max-sm:p-2"
+        onClick={openInChatOnRow && resumeInChatEnabled ? openInChat : onToggle}
       >
-        <span className="flex shrink-0 items-center pt-0.5">
+        <span className="flex shrink-0 items-center pt-0.5 max-sm:hidden">
           <Checkbox
             checked={isSelected}
             onClick={handleSelectClick}
@@ -535,9 +595,9 @@ function SessionRow({
           />
         </span>
         <div className={`shrink-0 pt-0.5 ${sourceInfo.color}`}>
-          <SourceIcon className="h-4 w-4" />
+          <SourceIcon className="h-4 w-4 max-sm:h-3 max-sm:w-3" />
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
+        <div className="flex min-w-0 flex-1 flex-col gap-2 max-sm:gap-1">
           <div className="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-start sm:justify-between sm:gap-3">
             <div className="flex min-w-0 flex-1 flex-col gap-0.5">
               <div className="flex min-w-0 items-center gap-2">
@@ -587,7 +647,7 @@ function SessionRow({
                   </div>
                 ) : (
                   <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm max-sm:text-[0.74rem] max-sm:leading-[1.03] ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
                   >
                     {hasTitle
                       ? session.title
@@ -603,8 +663,8 @@ function SessionRow({
                   </Badge>
                 )}
               </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-muted-foreground">
-                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px]">
+              <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-muted-foreground max-sm:text-[0.52rem] max-sm:leading-tight">
+                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px] max-sm:max-w-[5.25rem]">
                   {(session.model ?? t.common.unknown).split("/").pop()}
                 </span>
                 <span className="text-border">&#183;</span>
@@ -631,13 +691,20 @@ function SessionRow({
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {actionButtons}
+            {resumeInChatEnabled && (
+              <span className="ml-auto inline-flex items-center gap-0.5 text-[0.54rem] text-text-secondary">
+                Open
+                <ChevronRight className="h-2.5 w-2.5" />
+              </span>
+            )}
           </div>
         </div>
       </div>
 
       {isExpanded && (
-        <div className="min-w-0 border-t border-border bg-background/50 p-4">
+        <div
+          className={`min-w-0 border-t border-border bg-background/50 p-4 ${mobileTone.expanded}`}
+        >
           {loading && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
@@ -661,8 +728,77 @@ function SessionRow({
 }
 
 type SessionsView = "list" | "overview";
+type SessionListRubberbandEdge = "top" | "bottom";
 
 const PAGE_SIZE = 20;
+const DESKTOP_PINNED_SESSIONS_KEY = "hermes.desktop.pinnedSessions";
+const DESKTOP_PINNED_FETCH_LIMIT = 200;
+
+function newestFirst(a: SessionInfo, b: SessionInfo): number {
+  return new Date(b.last_active).getTime() - new Date(a.last_active).getTime();
+}
+
+type PinAwareSessionInfo = SessionInfo & { _lineage_root_id?: string | null };
+
+function sessionPinId(session: SessionInfo): string {
+  return (session as PinAwareSessionInfo)._lineage_root_id ?? session.id;
+}
+
+function readDesktopPinnedSessionIds(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(DESKTOP_PINNED_SESSIONS_KEY);
+    if (!raw) return [];
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (id): id is string => typeof id === "string" && id.length > 0,
+    );
+  } catch {
+    return [];
+  }
+}
+
+function uniqueSessions(sessions: SessionInfo[]): SessionInfo[] {
+  const seen = new Set<string>();
+  const next: SessionInfo[] = [];
+  for (const session of sessions) {
+    if (seen.has(session.id)) continue;
+    seen.add(session.id);
+    next.push(session);
+  }
+  return next;
+}
+
+function resolvePinnedDesktopSessions(
+  pinnedIds: string[],
+  sessions: SessionInfo[],
+): SessionInfo[] {
+  const byPinId = new Map<string, SessionInfo>();
+  for (const session of sessions) {
+    byPinId.set(session.id, session);
+    const pinId = sessionPinId(session);
+    if (!byPinId.has(pinId)) {
+      byPinId.set(pinId, session);
+    }
+  }
+  return pinnedIds
+    .map((id) => byPinId.get(id))
+    .filter((session): session is SessionInfo => Boolean(session));
+}
+
+function mobilePinnedFallbackSessions(sessions: SessionInfo[]): SessionInfo[] {
+  const substantial = sessions.filter((session) => {
+    const title = session.title?.trim();
+    return (
+      title &&
+      title !== "Untitled" &&
+      title.length > 5 &&
+      session.message_count > 1
+    );
+  });
+  return (substantial.length >= 2 ? substantial : sessions).slice(0, 2);
+}
 
 function SessionsPagination({
   className,
@@ -712,6 +848,107 @@ function SessionsPagination({
   );
 }
 
+function SessionsMobileSearch({
+  onSearchChange,
+  search,
+  searching,
+}: SessionsMobileSearchProps) {
+  const { t } = useI18n();
+
+  return (
+    <form
+      role="search"
+      className="hermes-session-search-glass shrink-0 border-t border-midground/10 bg-background-base/70 p-3 backdrop-blur-xl sm:hidden"
+      onSubmit={(event) => event.preventDefault()}
+    >
+      <div className="flex items-end gap-2 rounded-[1.45rem] border border-midground/15 bg-[color-mix(in_srgb,var(--midground-base)_5%,var(--background-base))] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_10px_30px_rgba(0,0,0,0.22)]">
+        <Input
+          type="search"
+          placeholder="search"
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          className="h-12 min-w-0 flex-1 border-0 bg-transparent px-2 py-3 text-base leading-6 text-midground shadow-none [background:transparent] placeholder:text-text-secondary/65 focus-visible:ring-0"
+        />
+        {searching && (
+          <Spinner className="mb-4 shrink-0 text-[0.875rem] text-primary" />
+        )}
+        <Button
+          type="button"
+          onClick={() => onSearchChange("")}
+          disabled={!search}
+          aria-label={t.common.clear}
+          className="hermes-ios-tap mb-0.5 flex h-12 min-h-12 w-12 min-w-12 shrink-0 items-center justify-center rounded-full border border-midground/20 bg-midground/10 p-0 text-center text-midground shadow-[0_0_24px_rgba(45,212,191,0.16)] disabled:opacity-35 disabled:shadow-none"
+        >
+          <span className="grid h-full w-full place-items-center">
+            <X className="h-5 w-5" />
+          </span>
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+function MobilePinnedSessionCard({
+  onOpen,
+  resumeInChatEnabled,
+  session,
+}: MobilePinnedSessionCardProps) {
+  const sourceInfo = (session.source
+    ? SOURCE_CONFIG[session.source]
+    : null) ?? { icon: Globe, color: "text-muted-foreground" };
+  const SourceIcon = sourceInfo.icon;
+  const hasTitle = session.title && session.title !== "Untitled";
+  const mobileTone = mobileSessionTone(session);
+
+  return (
+    <button
+      type="button"
+      className={`group flex min-h-[4.35rem] min-w-0 flex-col rounded-[0.82rem] border px-2 py-1.5 text-left backdrop-blur-md transition-colors ${mobileTone.pinned}`}
+      disabled={!resumeInChatEnabled}
+      onClick={onOpen}
+    >
+      <div className="flex min-w-0 items-start gap-1 text-midground">
+        <Pin className="mt-0.5 h-3 w-3 shrink-0 fill-current" />
+        <SourceIcon className={`mt-0.5 h-3 w-3 shrink-0 ${sourceInfo.color}`} />
+        <span className="font-mondwest normal-case min-w-0 flex-1 text-[0.74rem] font-medium leading-[1.03] [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden">
+          {hasTitle
+            ? session.title
+            : session.preview
+              ? session.preview.slice(0, 48)
+              : "Untitled session"}
+        </span>
+      </div>
+
+      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 font-mono-ui text-[0.52rem] leading-tight text-text-secondary">
+        <span className="truncate">
+          {(session.model ?? "unknown").split("/").pop()}
+        </span>
+        <span className="text-midground/38">•</span>
+        <span>{session.message_count} msgs</span>
+        {session.tool_call_count > 0 && (
+          <>
+            <span className="text-midground/38">•</span>
+            <span>{session.tool_call_count} tools</span>
+          </>
+        )}
+      </div>
+
+      <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 font-mono-ui text-[0.52rem] leading-tight text-text-secondary">
+        <span>{timeAgo(session.last_active)}</span>
+        <span className="text-midground/38">•</span>
+        <span className="truncate">Pinned</span>
+      </div>
+
+      <div className="mt-auto flex items-end justify-end gap-2 pt-0.5">
+        <span className="inline-flex items-center gap-0.5 font-mono-ui text-[0.54rem] text-midground">
+          Open
+          <ChevronRight className="h-2.5 w-2.5 transition-transform group-hover:translate-x-0.5" />
+        </span>
+      </div>
+    </button>
+  );
+}
+
 export default function SessionsPage() {
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [total, setTotal] = useState(0);
@@ -727,6 +964,12 @@ export default function SessionsPage() {
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const [desktopPinnedSessionIds, setDesktopPinnedSessionIds] = useState<string[]>(
+    () => readDesktopPinnedSessionIds(),
+  );
+  const [sessionListScrolled, setSessionListScrolled] = useState(false);
+  const [sessionListRubberband, setSessionListRubberband] =
+    useState<SessionListRubberbandEdge | null>(null);
   const [view, setView] = useState<SessionsView>("overview");
   // Count of empty (no-message, ended, non-archived) sessions across the
   // entire DB, populated by /api/sessions/empty/count. Used to:
@@ -750,6 +993,9 @@ export default function SessionsPage() {
   // Gmail / Notion / file-explorer convention. ``null`` means "no
   // anchor yet", in which case shift-click degrades to a plain toggle.
   const lastClickedIndexRef = useRef<number | null>(null);
+  const sessionListRubberbandTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sessionListTouchYRef = useRef<number | null>(null);
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
   const [stats, setStats] = useState<SessionStoreStats | null>(null);
@@ -760,7 +1006,38 @@ export default function SessionsPage() {
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
+  const navigate = useNavigate();
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
+  const isMobile = useBelowBreakpoint(640);
+
+  const triggerSessionListRubberband = useCallback(
+    (edge: SessionListRubberbandEdge) => {
+      if (!isMobile) return;
+      if (sessionListRubberbandTimerRef.current) {
+        clearTimeout(sessionListRubberbandTimerRef.current);
+      }
+      setSessionListRubberband(null);
+      window.requestAnimationFrame(() => setSessionListRubberband(edge));
+      sessionListRubberbandTimerRef.current = setTimeout(() => {
+        setSessionListRubberband(null);
+        sessionListRubberbandTimerRef.current = null;
+      }, 480);
+    },
+    [isMobile],
+  );
+
+  const maybeRubberbandSessionList = useCallback(
+    (el: HTMLDivElement, deltaY: number) => {
+      const maxScrollTop = el.scrollHeight - el.clientHeight;
+      if (maxScrollTop <= 1) return;
+      if (el.scrollTop <= 1 && deltaY < 0) {
+        triggerSessionListRubberband("top");
+      } else if (el.scrollTop >= maxScrollTop - 1 && deltaY > 0) {
+        triggerSessionListRubberband("bottom");
+      }
+    },
+    [triggerSessionListRubberband],
+  );
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -807,16 +1084,18 @@ export default function SessionsPage() {
   }, [setEnd]);
 
   const loadSessions = useCallback((p: number) => {
+    const limit = isMobile ? DESKTOP_PINNED_FETCH_LIMIT : PAGE_SIZE;
+    const offset = isMobile ? 0 : p * PAGE_SIZE;
     setLoading(true);
     api
-      .getSessions(PAGE_SIZE, p * PAGE_SIZE)
+      .getSessions(limit, offset)
       .then((resp) => {
-        setSessions(resp.sessions);
+        setSessions(resp.sessions.slice().sort(newestFirst));
         setTotal(resp.total);
       })
       .catch(() => {})
       .finally(() => setLoading(false));
-  }, []);
+  }, [isMobile]);
 
   const loadStats = useCallback(() => {
     api
@@ -830,6 +1109,8 @@ export default function SessionsPage() {
   }, [loadStats]);
 
   useEffect(() => {
+    // Initial/page-driven fetch synchronizes this route with the sessions API.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     loadSessions(page);
     refreshEmptyCount();
   }, [loadSessions, page, refreshEmptyCount]);
@@ -841,8 +1122,8 @@ export default function SessionsPage() {
         .then(setStatus)
         .catch(() => {});
       api
-        .getSessions(50)
-        .then((r) => setOverviewSessions(r.sessions))
+        .getSessions(DESKTOP_PINNED_FETCH_LIMIT)
+        .then((r) => setOverviewSessions(r.sessions.slice().sort(newestFirst)))
         .catch(() => {});
     };
     loadOverview();
@@ -851,9 +1132,28 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
+    const refreshPinned = () =>
+      setDesktopPinnedSessionIds(readDesktopPinnedSessionIds());
+    window.addEventListener("storage", refreshPinned);
+    window.addEventListener("focus", refreshPinned);
+    return () => {
+      window.removeEventListener("storage", refreshPinned);
+      window.removeEventListener("focus", refreshPinned);
+    };
+  }, []);
+
+  useEffect(() => {
     const el = logScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [actionStatus?.lines]);
+
+  useEffect(() => {
+    return () => {
+      if (sessionListRubberbandTimerRef.current) {
+        clearTimeout(sessionListRubberbandTimerRef.current);
+      }
+    };
+  }, []);
 
   // Wrapped setters that ALSO clear the bulk selection. The user's
   // mental model is "I'm selecting what I can see" — carrying a
@@ -890,11 +1190,14 @@ export default function SessionsPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
+      // Empty search resets derived search state immediately.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       setSearchResults(null);
       setSearching(false);
       return;
     }
 
+    // Search input starts a debounced async fetch from this effect.
     setSearching(true);
     debounceRef.current = setTimeout(() => {
       api
@@ -1164,26 +1467,74 @@ export default function SessionsPage() {
 
   // When searching, filter sessions to those with FTS matches;
   // when not searching, show all sessions
-  const filtered = searchResults
-    ? sessions.filter((s) => snippetMap.has(s.id))
-    : sessions;
+  const filtered = (
+    searchResults
+      ? sessions.filter((s) => snippetMap.has(s.id))
+      : sessions
+  ).slice().sort(newestFirst);
+  const sessionPool = useMemo(
+    () => uniqueSessions([...overviewSessions, ...sessions]),
+    [overviewSessions, sessions],
+  );
+  const pinnedDesktopSessions = useMemo(
+    () => resolvePinnedDesktopSessions(desktopPinnedSessionIds, sessionPool),
+    [desktopPinnedSessionIds, sessionPool],
+  );
 
   const platformEntries = status
     ? Object.entries(status.gateway_platforms ?? {})
     : [];
   const recentSessions = overviewSessions
     .filter((s) => !s.is_active)
+    .slice()
+    .sort(newestFirst)
     .slice(0, 5);
 
   const isSearching = Boolean(search.trim());
   const showOverviewTab =
     platformEntries.length > 0 || recentSessions.length > 0;
-  const showList = view === "list" || isSearching || !showOverviewTab;
-  const showPagination = showList && !searchResults && total > PAGE_SIZE;
+  const showList = isMobile || view === "list" || isSearching || !showOverviewTab;
+  const showPagination =
+    !isMobile && showList && !searchResults && total > PAGE_SIZE;
+  const mobilePinnedSessions = useMemo(
+    () =>
+      isMobile && !isSearching
+        ? (pinnedDesktopSessions.length > 0
+          ? pinnedDesktopSessions
+          : mobilePinnedFallbackSessions(filtered))
+        : [],
+    [filtered, isMobile, isSearching, pinnedDesktopSessions],
+  );
+  const showMobilePinnedSessions = mobilePinnedSessions.length > 0;
+  const mobilePinnedKeys = useMemo(
+    () =>
+      new Set(
+        mobilePinnedSessions.flatMap((session) => [
+          session.id,
+          sessionPinId(session),
+        ]),
+      ),
+    [mobilePinnedSessions],
+  );
+  const visibleSessions = showMobilePinnedSessions
+    ? filtered.filter(
+        (session) =>
+          !mobilePinnedKeys.has(session.id) &&
+          !mobilePinnedKeys.has(sessionPinId(session)),
+      )
+    : filtered;
 
   useEffect(() => {
+    // Searching forces the mobile sessions surface back to list mode.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (isSearching) setView("list");
   }, [isSearching]);
+
+  useEffect(() => {
+    // Search/list changes reset only the visual scroll affordance.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setSessionListScrolled(false);
+  }, [search, visibleSessions.length]);
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
@@ -1217,7 +1568,8 @@ export default function SessionsPage() {
   }
 
   return (
-    <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
+    <div className="hermes-mobile-card hermes-ios-surface hermes-mythic-frame hermes-mobile-sessions-shell relative isolate flex min-h-0 w-full max-w-full flex-col overflow-hidden rounded-[1.65rem] sm:gap-4 sm:overflow-visible sm:rounded-none sm:border-0 sm:bg-transparent sm:shadow-none sm:backdrop-blur-0 sm:[background:transparent] sm:[backdrop-filter:none]">
+      <span aria-hidden="true" className="hermes-mythic-art hermes-mythic-art--sessions" />
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
 
@@ -1315,34 +1667,80 @@ export default function SessionsPage() {
         </DialogContent>
       </Dialog>
 
+      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-4 sm:hidden">
+        <div
+          className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
+          style={{ mixBlendMode: "plus-lighter" }}
+        >
+          Sessions
+        </div>
+      </div>
+
+      <div
+        className="hermes-mobile-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4 pt-1 max-sm:overflow-hidden sm:contents sm:overflow-visible sm:p-0"
+        data-history-scrolled={sessionListScrolled ? "true" : "false"}
+      >
+
+      {showMobilePinnedSessions && (
+        <section className="hermes-session-pinned-glass px-0 sm:hidden">
+          <div className="grid min-w-0 grid-cols-2 gap-1.5">
+            {mobilePinnedSessions.map((s) => (
+              <MobilePinnedSessionCard
+                key={`pinned-${s.id}`}
+                session={s}
+                onOpen={() =>
+                  navigate(`/chat?resume=${encodeURIComponent(s.id)}`)
+                }
+                resumeInChatEnabled={resumeInChatEnabled}
+              />
+            ))}
+          </div>
+        </section>
+      )}
+
       {stats && (
-        <div className="flex flex-wrap items-center gap-x-6 gap-y-2 border border-border bg-background-base/40 px-4 py-3">
-          <div className="flex flex-col">
+        <div className="hidden min-w-0 items-center gap-2 rounded-[1.05rem] border border-midground/8 bg-midground/[0.035] px-3 py-2 font-mono-ui text-[0.64rem] uppercase tracking-[0.06em] text-text-secondary shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] sm:flex sm:flex-wrap sm:gap-x-6 sm:gap-y-2 sm:rounded-none sm:border sm:border-border sm:bg-background-base/40 sm:px-4 sm:py-3 sm:text-xs sm:normal-case sm:tracking-normal">
+          <span className="min-w-0 truncate sm:hidden">
+            {stats.total} total
+          </span>
+          <span className="text-midground/35 sm:hidden">/</span>
+          <span className="min-w-0 truncate text-success sm:hidden">
+            {stats.active_store} active
+          </span>
+          <span className="text-midground/35 sm:hidden">/</span>
+          <span className="min-w-0 truncate sm:hidden">
+            {stats.archived} archived
+          </span>
+          <span className="ml-auto shrink-0 text-midground sm:hidden">
+            {stats.messages} msgs
+          </span>
+
+          <div className="hidden min-w-0 flex-col sm:flex">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.total}
             </span>
-            <span className="text-xs text-muted-foreground">Total</span>
+            <span className="truncate text-[0.65rem] text-muted-foreground sm:text-xs">Total</span>
           </div>
-          <div className="flex flex-col">
+          <div className="hidden min-w-0 flex-col sm:flex">
             <span className="text-lg font-semibold tabular-nums leading-none text-success">
               {stats.active_store}
             </span>
-            <span className="text-xs text-muted-foreground">Active in store</span>
+            <span className="truncate text-[0.65rem] text-muted-foreground sm:text-xs">Active</span>
           </div>
-          <div className="flex flex-col">
+          <div className="hidden min-w-0 flex-col sm:flex">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.archived}
             </span>
-            <span className="text-xs text-muted-foreground">Archived</span>
+            <span className="truncate text-[0.65rem] text-muted-foreground sm:text-xs">Archived</span>
           </div>
-          <div className="flex flex-col">
+          <div className="hidden min-w-0 flex-col sm:flex">
             <span className="text-lg font-semibold tabular-nums leading-none">
               {stats.messages}
             </span>
-            <span className="text-xs text-muted-foreground">Messages</span>
+            <span className="truncate text-[0.65rem] text-muted-foreground sm:text-xs">Messages</span>
           </div>
           {Object.keys(stats.by_source).length > 0 && (
-            <div className="flex min-w-0 flex-1 flex-wrap items-center gap-1.5">
+            <div className="hidden min-w-0 flex-1 flex-wrap items-center gap-1.5 sm:flex">
               {Object.entries(stats.by_source).map(([src, count]) => (
                 <Badge key={src} tone="outline" className="text-xs">
                   {src}: {count}
@@ -1442,7 +1840,7 @@ export default function SessionsPage() {
       {(showOverviewTab && !isSearching) || showList ? (
         <div className="flex w-full min-w-0 flex-wrap items-center gap-2 sm:gap-3">
           <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2 sm:gap-3">
-            {showOverviewTab && !isSearching && (
+            {showOverviewTab && !isSearching && !isMobile && (
               <Segmented
                 className="w-fit shrink-0"
                 size="md"
@@ -1456,7 +1854,7 @@ export default function SessionsPage() {
             )}
 
             {showList && (
-              <div className="relative min-w-0 w-full sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
+              <div className="relative hidden min-w-0 w-full sm:block sm:w-auto sm:min-w-[12rem] sm:max-w-md sm:flex-1">
                 {searching ? (
                   <Spinner className="absolute left-2.5 top-1/2 -translate-y-1/2 text-[0.875rem] text-primary" />
                 ) : (
@@ -1466,7 +1864,7 @@ export default function SessionsPage() {
                   placeholder={t.sessions.searchPlaceholder}
                   value={search}
                   onChange={(e) => updateSearch(e.target.value)}
-                  className="h-8 py-0 pr-7 pl-8 text-xs leading-none"
+                  className="h-10 rounded-none border-x-0 border-t-0 border-midground/10 bg-transparent py-0 pr-7 pl-8 text-sm leading-none shadow-none [background:transparent] focus-visible:ring-0 sm:h-8 sm:rounded-sm sm:border sm:bg-background sm:text-xs"
                 />
                 {search && (
                   <Button
@@ -1503,7 +1901,7 @@ export default function SessionsPage() {
           {showPagination && (
             <SessionsPagination
               compact
-              className="shrink-0 sm:ml-auto"
+              className="hidden shrink-0 sm:ml-auto sm:flex"
               page={page}
               total={total}
               onPageChange={goToPage}
@@ -1527,11 +1925,11 @@ export default function SessionsPage() {
               String(selectedIds.size),
             )}
           </span>
-          {filtered.some((s) => !selectedIds.has(s.id)) && (
+          {visibleSessions.some((s) => !selectedIds.has(s.id)) && (
             <Button
               ghost
               size="sm"
-              onClick={() => selectAllOnPage(filtered)}
+              onClick={() => selectAllOnPage(visibleSessions)}
               aria-label={t.sessions.selectAllOnPage}
               title={t.sessions.selectAllOnPage}
             >
@@ -1592,8 +1990,50 @@ export default function SessionsPage() {
           </div>
         ) : (
           <>
-            <div className="flex min-w-0 flex-col gap-1.5">
-              {filtered.map((s, index) => (
+            <div className="hidden items-center justify-between border-t border-midground/12 px-0.5 pt-3 font-mono-ui text-[0.76rem] uppercase tracking-[0.18em] text-midground sm:flex">
+              <span className="inline-flex min-w-0 items-center gap-2">
+                <Clock className="h-4 w-4 shrink-0" />
+                <span>History</span>
+              </span>
+              <span className="tabular-nums">{visibleSessions.length}</span>
+            </div>
+            <div
+              className="hermes-ios-session-list grid min-w-0 grid-cols-2 gap-1.5 overflow-y-auto pr-0.5 sm:flex sm:flex-col sm:gap-1.5 sm:overflow-visible sm:rounded-none sm:border-0 sm:pr-0"
+              aria-label="Session history"
+              data-scrolled={sessionListScrolled ? "true" : "false"}
+              data-rubberband={sessionListRubberband ?? undefined}
+              role="region"
+              tabIndex={0}
+              onScroll={(event) => {
+                const scrolled = event.currentTarget.scrollTop > 2;
+                setSessionListScrolled((current) =>
+                  current === scrolled ? current : scrolled,
+                );
+              }}
+              onTouchStart={(event) => {
+                sessionListTouchYRef.current = event.touches[0]?.clientY ?? null;
+              }}
+              onTouchMove={(event) => {
+                setSessionListScrolled(true);
+                const y = event.touches[0]?.clientY;
+                if (y == null || sessionListTouchYRef.current == null) return;
+                maybeRubberbandSessionList(
+                  event.currentTarget,
+                  sessionListTouchYRef.current - y,
+                );
+              }}
+              onTouchEnd={() => {
+                sessionListTouchYRef.current = null;
+              }}
+              onWheel={(event) => {
+                setSessionListScrolled(true);
+                maybeRubberbandSessionList(
+                  event.currentTarget,
+                  event.deltaY,
+                );
+              }}
+            >
+              {visibleSessions.map((s, index) => (
                 <SessionRow
                   key={s.id}
                   session={s}
@@ -1605,11 +2045,12 @@ export default function SessionsPage() {
                     setExpandedId((prev) => (prev === s.id ? null : s.id))
                   }
                   onSelectClick={(event) =>
-                    handleSelectClick(event, index, filtered)
+                    handleSelectClick(event, index, visibleSessions)
                   }
                   onDelete={() => sessionDelete.requestDelete(s.id)}
                   onRename={handleRename}
                   onExport={handleExport}
+                  openInChatOnRow={isMobile}
                   resumeInChatEnabled={resumeInChatEnabled}
                 />
               ))}
@@ -1617,6 +2058,7 @@ export default function SessionsPage() {
 
             {showPagination && (
               <SessionsPagination
+                className="hidden sm:flex"
                 page={page}
                 total={total}
                 onPageChange={goToPage}
@@ -1683,6 +2125,14 @@ export default function SessionsPage() {
       )}
 
       <PluginSlot name="sessions:bottom" />
+      </div>
+      {showList && (
+        <SessionsMobileSearch
+          search={search}
+          searching={searching}
+          onSearchChange={updateSearch}
+        />
+      )}
     </div>
   );
 }
@@ -1693,6 +2143,7 @@ interface SessionRowProps {
   onDelete: () => void;
   onExport: (id: string) => void;
   onRename: (id: string, title: string) => Promise<void>;
+  openInChatOnRow: boolean;
   onSelectClick: (event: React.MouseEvent) => void;
   onToggle: () => void;
   resumeInChatEnabled: boolean;
@@ -1707,4 +2158,16 @@ interface SessionsPaginationProps {
   onPageChange: (page: number) => void;
   page: number;
   total: number;
+}
+
+interface MobilePinnedSessionCardProps {
+  onOpen: () => void;
+  resumeInChatEnabled: boolean;
+  session: SessionInfo;
+}
+
+interface SessionsMobileSearchProps {
+  onSearchChange: (value: string) => void;
+  search: string;
+  searching: boolean;
 }
