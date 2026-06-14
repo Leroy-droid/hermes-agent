@@ -395,14 +395,15 @@ export default function App() {
       return next;
     });
   }, []);
-  const isMobile = useBelowBreakpoint(1024);
+  const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isChatRoute = normalizedPath === "/chat";
+  const isSessionsRoute = normalizedPath === "/sessions";
+  const forceMobileSurface = (isChatRoute || isSessionsRoute) && new URLSearchParams(search).get("mobile") === "1";
+  const isMobile = useBelowBreakpoint(1024) || forceMobileSurface;
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
-  const normalizedPath = pathname.replace(/\/$/, "") || "/";
-  const isChatRoute = normalizedPath === "/chat";
-  const isSessionsRoute = normalizedPath === "/sessions";
   const isMobileSurfaceRoute = isChatRoute || isSessionsRoute;
   const embeddedChat = isDashboardEmbeddedChatEnabled();
   const activeMobileTab: MobileTabKey = mobileOpen
@@ -591,12 +592,20 @@ export default function App() {
     <div
       data-chat-route={isChatRoute ? "true" : "false"}
       data-mobile-surface-route={isMobileSurfaceRoute ? "true" : "false"}
+      data-force-mobile-surface={forceMobileSurface ? "true" : "false"}
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      className={cn(
+        "flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased",
+        forceMobileSurface && "bg-[#111820]",
+      )}
     >
       <SelectionSwitcher />
-      <Backdrop />
-      <PluginSlot name="backdrop" />
+      {!forceMobileSurface && (
+        <>
+          <Backdrop />
+          <PluginSlot name="backdrop" />
+        </>
+      )}
 
       <header
         className={cn(
@@ -644,13 +653,19 @@ export default function App() {
         />
       )}
 
-      <PluginSlot name="header-banner" />
-      <ProfileScopeBanner />
+      {!forceMobileSurface && (
+        <>
+          <PluginSlot name="header-banner" />
+          <ProfileScopeBanner />
+        </>
+      )}
 
       <div
         className={cn(
           "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:pt-0",
-          isMobileSurfaceRoute
+          forceMobileSurface
+            ? "pt-0"
+            : isMobileSurfaceRoute
             ? "pt-[calc(0.7rem+env(safe-area-inset-top,0px))]"
             : "pt-[calc(4.25rem+env(safe-area-inset-top,0px))]",
         )}
@@ -671,6 +686,7 @@ export default function App() {
               "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
               collapsed && "lg:w-14",
               isMobile && "hermes-ios-surface hermes-mythic-frame border-current/10 bg-transparent",
+              forceMobileSurface && "hidden",
             )}
             style={{
               background: isMobile ? undefined : "var(--component-sidebar-background)",
@@ -678,7 +694,7 @@ export default function App() {
               borderImage: "var(--component-sidebar-border-image)",
             }}
           >
-            {isMobile && (
+            {isMobile && !forceMobileSurface && (
               <span
                 aria-hidden="true"
                 className="hermes-mythic-art hermes-mythic-art--more"
@@ -869,15 +885,17 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
+                forceMobileSurface ? "px-0 py-0" : "px-3 sm:px-6",
                 isMobile && isMobileSurfaceRoute && !mobileOpen && mobileTransitionClass,
-                isMobileSurfaceRoute
+                forceMobileSurface
+                  ? ""
+                  : isMobileSurfaceRoute
                   ? "pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] pt-1 sm:pt-2 lg:pb-0 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
-            >
-              <PluginSlot name="pre-main" />
+              >
+                {!forceMobileSurface && <PluginSlot name="pre-main" />}
               <div
                 className={cn(
                   "w-full min-w-0",
@@ -930,13 +948,13 @@ export default function App() {
                     </div>
                   ))}
               </div>
-              <PluginSlot name="post-main" />
+              {!forceMobileSurface && <PluginSlot name="post-main" />}
             </div>
           </PageHeaderProvider>
         </div>
       </div>
 
-      {isMobile && (
+      {isMobile && !forceMobileSurface && (
         <MobileBottomDock
           attentionCount={mobileAttentionCount}
           items={mobileDockItems}

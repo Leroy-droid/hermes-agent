@@ -6,14 +6,16 @@ import {
   useRef,
   useMemo,
 } from "react";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import {
   AlertTriangle,
+  Archive,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
   Database,
+  Edit3,
   MessageSquare,
   Search,
   Trash2,
@@ -28,10 +30,10 @@ import {
   Download,
   Pencil,
   Check,
-  Archive,
   Pin,
 } from "lucide-react";
 import { api } from "@/lib/api";
+import { GatewayClient } from "@/lib/gatewayClient";
 import type {
   SessionInfo,
   SessionMessage,
@@ -68,6 +70,7 @@ import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import { mobilePreviewChatMessages } from "@/lib/mobilePreview";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
   {
@@ -125,6 +128,161 @@ function mobileSessionTone(session: SessionInfo) {
   return (
     MOBILE_SESSION_TONES[session.source ?? ""] ?? MOBILE_SESSION_TONES.default
   );
+}
+
+function mobileChatResumePath(sessionId: string): string {
+  return `/chat?mobile=1&resume=${encodeURIComponent(sessionId)}`;
+}
+
+function sessionDisplayTitle(session: SessionInfo): string {
+  if (session.title && session.title !== "Untitled") return session.title;
+  if (session.preview) return session.preview.slice(0, 72);
+  return "Untitled session";
+}
+
+function sessionPreviewText(session: SessionInfo): string {
+  return session.pending_summary?.trim() || session.preview?.trim() || "No recent transcript preview yet.";
+}
+
+function highlightedTextParts(text: string, query?: string): React.ReactNode {
+  const terms = query
+    ?.toLowerCase()
+    .split(/\s+/)
+    .filter((term) => term.length > 1);
+  if (!terms?.length) return text;
+
+  const pattern = new RegExp(
+    `(${terms.map((term) => term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})`,
+    "ig",
+  );
+
+  return text.split(pattern).map((part, index) =>
+    terms.includes(part.toLowerCase()) ? (
+      <mark key={`${part}-${index}`} className="hermes-mobile-search-mark">
+        {part}
+      </mark>
+    ) : (
+      part
+    ),
+  );
+}
+
+function resistedSwipeOffset(dx: number): number {
+  const limit = 92;
+  const sign = Math.sign(dx);
+  const abs = Math.abs(dx);
+  if (abs <= 64) return dx;
+  const resisted = 64 + (abs - 64) * 0.38;
+  return sign * Math.min(limit, resisted);
+}
+
+function sessionActiveTimeMs(session: SessionInfo): number {
+  return session.last_active < 1_000_000_000_000
+    ? session.last_active * 1000
+    : session.last_active;
+}
+
+function isRecentlyUpdatedSession(session: SessionInfo): boolean {
+  if (session.is_active) return true;
+  return Date.now() - sessionActiveTimeMs(session) < 10 * 60 * 1000;
+}
+
+function pendingKindLabel(kind?: string): string {
+  if (kind === "approval") return "Approval";
+  if (kind === "clarify") return "Question";
+  if (kind === "sudo") return "Sudo";
+  if (kind === "secret") return "Secret";
+  return "Needs input";
+}
+
+function liveStatusLabel(status?: string): string {
+  if (status === "starting") return "Starting";
+  if (status === "waiting") return "Waiting";
+  if (status === "working") return "Working";
+  return "Live";
+}
+
+function waitingInputAlertKey(session: SessionInfo): string {
+  return [
+    session.pending_kind || "input",
+    session.pending_request_id || session.live_session_id || session.id,
+  ].join(":");
+}
+
+function waitingInputAlertTitle(session: SessionInfo): string {
+  if (session.pending_kind === "approval") return "Hermes needs approval";
+  if (session.pending_kind === "clarify") return "Hermes has a question";
+  if (session.pending_kind === "sudo") return "Sudo password needed";
+  if (session.pending_kind === "secret") return "Secret needed";
+  return "Hermes needs input";
+}
+
+function waitingInputAlertBody(session: SessionInfo): string {
+  return session.pending_summary || sessionPreviewText(session);
+}
+
+type BlockerChoice = "always" | "deny" | "once" | "session";
+
+async function sendWaitingInputResponse(
+  session: SessionInfo,
+  response: { answer?: string; choice?: BlockerChoice; value?: string },
+) {
+  const gateway = new GatewayClient();
+  await gateway.connect();
+  try {
+    if (session.pending_kind === "approval") {
+      await gateway.request("approval.respond", {
+        choice: response.choice ?? "deny",
+        session_id: session.live_session_id || session.id,
+      });
+      return;
+    }
+
+    const requestId = session.pending_request_id;
+    if (!requestId) throw new Error("This request is no longer waiting.");
+
+    if (session.pending_kind === "clarify") {
+      await gateway.request("clarify.respond", {
+        answer: response.answer ?? "",
+        request_id: requestId,
+      });
+      return;
+    }
+
+    if (session.pending_kind === "sudo") {
+      await gateway.request("sudo.respond", {
+        password: response.value ?? "",
+        request_id: requestId,
+      });
+      return;
+    }
+
+    if (session.pending_kind === "secret") {
+      await gateway.request("secret.respond", {
+        request_id: requestId,
+        value: response.value ?? "",
+      });
+      return;
+    }
+
+    throw new Error("This session is not waiting for input.");
+  } finally {
+    gateway.close();
+  }
+}
+
+async function interruptLiveSession(session: SessionInfo) {
+  const liveSessionId = session.live_session_id || session.id;
+  if (!liveSessionId) throw new Error("No live session is attached.");
+  const gateway = new GatewayClient();
+  await gateway.connect();
+  try {
+    await gateway.request("session.interrupt", {
+      session_id: liveSessionId,
+    });
+  } finally {
+    gateway.close();
+  }
 }
 
 /** Render an FTS5 snippet with highlighted matches.
@@ -429,8 +587,14 @@ function SessionRow({
   searchQuery,
   isExpanded,
   isSelected,
+  isPinned,
+  isMobile,
+  isOpening,
   onToggle,
   onSelectClick,
+  onOpenInChat,
+  onPin,
+  onArchive,
   onDelete,
   onRename,
   onExport,
@@ -443,6 +607,9 @@ function SessionRow({
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
   const [renameSaving, setRenameSaving] = useState(false);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [swipeOpen, setSwipeOpen] = useState<"left" | "right" | null>(null);
+  const swipeStartRef = useRef<{ x: number; y: number } | null>(null);
   const { t } = useI18n();
   const navigate = useNavigate();
 
@@ -464,11 +631,28 @@ function SessionRow({
     ? SOURCE_CONFIG[session.source]
     : null) ?? { icon: Globe, color: "text-muted-foreground" };
   const SourceIcon = sourceInfo.icon;
-  const hasTitle = session.title && session.title !== "Untitled";
+  const hasTitle = Boolean(session.title && session.title !== "Untitled");
+  const titleText = hasTitle && session.title
+    ? session.title
+    : session.preview
+      ? session.preview.slice(0, 60)
+      : t.sessions.untitledSession;
   const mobileTone = mobileSessionTone(session);
+  const isRecentlyUpdated = isRecentlyUpdatedSession(session);
+  const showMobilePreview = Boolean(
+    isMobile &&
+      hasTitle &&
+      session.preview?.trim() &&
+      titleText.length <= 72 &&
+      !snippet,
+  );
   const openInChat = () => {
     if (!resumeInChatEnabled) return;
-    navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+    if (openInChatOnRow) {
+      onOpenInChat(session.id);
+    } else {
+      navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+    }
   };
 
   const submitRename = async () => {
@@ -501,7 +685,11 @@ function SessionRow({
           title={t.sessions.resumeInChat}
           onClick={(e) => {
             e.stopPropagation();
-            navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            if (openInChatOnRow) {
+              onOpenInChat(session.id);
+            } else {
+              navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            }
           }}
         >
           <Play />
@@ -579,13 +767,121 @@ function SessionRow({
     onSelectClick(e);
   };
 
+  const closeSwipe = useCallback(() => {
+    setSwipeOpen(null);
+    setSwipeOffset(0);
+  }, []);
+
+  const handleTouchStart = (event: React.TouchEvent) => {
+    if (!isMobile) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    swipeStartRef.current = { x: touch.clientX, y: touch.clientY };
+  };
+
+  const handleTouchMove = (event: React.TouchEvent) => {
+    if (!isMobile || !swipeStartRef.current) return;
+    const touch = event.touches[0];
+    if (!touch) return;
+    const dx = touch.clientX - swipeStartRef.current.x;
+    const dy = touch.clientY - swipeStartRef.current.y;
+    if (Math.abs(dy) > Math.abs(dx) || Math.abs(dx) < 12) return;
+    event.stopPropagation();
+    const clamped = resistedSwipeOffset(dx);
+    setSwipeOpen(null);
+    setSwipeOffset(clamped);
+  };
+
+  const handleTouchEnd = () => {
+    if (!isMobile) return;
+    if (swipeOffset > MOBILE_SWIPE_THRESHOLD) {
+      setSwipeOpen("right");
+      setSwipeOffset(72);
+    } else if (swipeOffset < -MOBILE_SWIPE_THRESHOLD) {
+      setSwipeOpen("left");
+      setSwipeOffset(-92);
+    } else {
+      closeSwipe();
+    }
+    swipeStartRef.current = null;
+  };
+
   return (
     <div
-      className={`max-w-full min-w-0 overflow-hidden border transition-colors max-sm:min-h-[4.35rem] max-sm:shrink-0 max-sm:rounded-[0.82rem] max-sm:shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_10px_28px_rgba(0,0,0,0.1)] max-sm:backdrop-blur-md ${containerClasses}`}
+      className={`hermes-mobile-session-row-card group relative max-w-full min-w-0 overflow-hidden border transition-colors max-sm:min-h-[4.35rem] max-sm:shrink-0 max-sm:rounded-[0.82rem] max-sm:shadow-[inset_0_1px_0_rgba(255,255,255,0.055),0_10px_28px_rgba(0,0,0,0.1)] max-sm:backdrop-blur-md ${containerClasses}`}
+      data-swipe-open={swipeOpen ?? undefined}
+      data-swipe-active={Math.abs(swipeOffset) > 12 ? "true" : undefined}
+      data-opening={isOpening ? "true" : undefined}
     >
       <div
-        className="flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30 max-sm:min-h-[4.35rem] max-sm:gap-1 max-sm:p-2"
-        onClick={openInChatOnRow && resumeInChatEnabled ? openInChat : onToggle}
+        aria-hidden={!isMobile}
+        className="hermes-mobile-swipe-actions hermes-mobile-swipe-actions--pin"
+      >
+        <button
+          type="button"
+          className="hermes-mobile-swipe-button"
+          tabIndex={isMobile ? 0 : -1}
+          onClick={(event) => {
+            event.stopPropagation();
+            onPin();
+            closeSwipe();
+          }}
+        >
+          <Pin className="h-4 w-4" />
+          <span>{isPinned ? "Pinned" : "Pin"}</span>
+        </button>
+      </div>
+      <div
+        aria-hidden={!isMobile}
+        className="hermes-mobile-swipe-actions hermes-mobile-swipe-actions--manage"
+      >
+        <button
+          type="button"
+          className="hermes-mobile-swipe-button"
+          tabIndex={isMobile ? 0 : -1}
+          onClick={(event) => {
+            event.stopPropagation();
+            onArchive();
+            closeSwipe();
+          }}
+        >
+          <Archive className="h-4 w-4" />
+          <span>Archive</span>
+        </button>
+        <button
+          type="button"
+          className="hermes-mobile-swipe-button hermes-mobile-swipe-button--delete"
+          tabIndex={isMobile ? 0 : -1}
+          onClick={(event) => {
+            event.stopPropagation();
+            onDelete();
+            closeSwipe();
+          }}
+        >
+          <Trash2 className="h-4 w-4" />
+          <span>Delete</span>
+        </button>
+      </div>
+      <div
+        className="hermes-mobile-session-row-content relative z-10 flex cursor-pointer items-start gap-3 p-3 transition-colors hover:bg-secondary/30 max-sm:min-h-[4.35rem] max-sm:gap-1 max-sm:p-2"
+        style={
+          isMobile && swipeOffset !== 0
+            ? { transform: `translateX(${swipeOffset}px)` }
+            : undefined
+        }
+        onClick={(event) => {
+          if (swipeOpen) {
+            event.stopPropagation();
+            closeSwipe();
+            return;
+          }
+          if (openInChatOnRow && resumeInChatEnabled) openInChat();
+          else onToggle();
+        }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={closeSwipe}
       >
         <span className="flex shrink-0 items-center pt-0.5 max-sm:hidden">
           <Checkbox
@@ -647,40 +943,47 @@ function SessionRow({
                   </div>
                 ) : (
                   <span
-                    className={`font-mondwest normal-case min-w-0 flex-1 truncate text-sm max-sm:text-[0.74rem] max-sm:leading-[1.03] ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
+                    className={`hermes-mobile-session-title font-mondwest normal-case min-w-0 flex-1 truncate text-sm max-sm:text-[0.74rem] max-sm:leading-[1.03] ${hasTitle ? "font-medium" : "text-muted-foreground italic"}`}
                   >
-                    {hasTitle
-                      ? session.title
-                      : session.preview
-                        ? session.preview.slice(0, 60)
-                        : t.sessions.untitledSession}
+                    {highlightedTextParts(titleText, searchQuery)}
                   </span>
                 )}
+                {isMobile && isRecentlyUpdated && (
+                  <span
+                    aria-label={session.is_active ? t.common.live : "Recent"}
+                    className="hermes-mobile-session-fresh-dot"
+                  />
+                )}
                 {session.is_active && (
-                  <Badge tone="success" className="shrink-0 text-xs">
+                  <Badge tone="success" className="shrink-0 text-xs max-sm:hidden">
                     <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                     {t.common.live}
                   </Badge>
                 )}
               </div>
-              <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-muted-foreground max-sm:text-[0.52rem] max-sm:leading-tight">
-                <span className="max-w-[min(100%,12rem)] truncate sm:max-w-[180px] max-sm:max-w-[5.25rem]">
+              {showMobilePreview && (
+                <p className="hermes-mobile-session-preview min-w-0 max-w-full truncate text-xs text-text-secondary">
+                  {session.preview}
+                </p>
+              )}
+              <div className="hermes-mobile-session-meta flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 text-xs text-muted-foreground max-sm:text-[0.52rem] max-sm:leading-tight">
+                <span className="hermes-mobile-session-model max-w-[min(100%,12rem)] truncate sm:max-w-[180px] max-sm:max-w-[5.25rem]">
                   {(session.model ?? t.common.unknown).split("/").pop()}
                 </span>
-                <span className="text-border">&#183;</span>
-                <span className="shrink-0">
+                <span className="hermes-mobile-session-dot text-border">&#183;</span>
+                <span className="hermes-mobile-session-count shrink-0">
                   {session.message_count} {t.common.msgs}
                 </span>
                 {session.tool_call_count > 0 && (
                   <>
-                    <span className="text-border">&#183;</span>
-                    <span className="shrink-0">
+                    <span className="hermes-mobile-session-dot text-border">&#183;</span>
+                    <span className="hermes-mobile-session-tools shrink-0">
                       {session.tool_call_count} {t.common.tools}
                     </span>
                   </>
                 )}
-                <span className="text-border">&#183;</span>
-                <span className="shrink-0">{timeAgo(session.last_active)}</span>
+                <span className="hermes-mobile-session-dot text-border">&#183;</span>
+                <span className="hermes-mobile-session-time shrink-0">{timeAgo(session.last_active)}</span>
               </div>
               {snippet && <SnippetHighlight snippet={snippet} />}
             </div>
@@ -688,15 +991,6 @@ function SessionRow({
             <div className="hidden shrink-0 items-center gap-2 sm:flex">
               {actionButtons}
             </div>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-2 sm:hidden">
-            {resumeInChatEnabled && (
-              <span className="ml-auto inline-flex items-center gap-0.5 text-[0.54rem] text-text-secondary">
-                Open
-                <ChevronRight className="h-2.5 w-2.5" />
-              </span>
-            )}
           </div>
         </div>
       </div>
@@ -729,10 +1023,21 @@ function SessionRow({
 
 type SessionsView = "list" | "overview";
 type SessionListRubberbandEdge = "top" | "bottom";
+type PinnedRailRubberbandEdge = "left" | "right";
 
 const PAGE_SIZE = 20;
 const DESKTOP_PINNED_SESSIONS_KEY = "hermes.desktop.pinnedSessions";
 const DESKTOP_PINNED_FETCH_LIMIT = 200;
+const MOBILE_SWIPE_THRESHOLD = 56;
+const MOBILE_LONG_PRESS_MS = 420;
+
+type MobileSessionGroupId = "today" | "yesterday" | "older";
+
+interface MobileSessionGroup {
+  id: MobileSessionGroupId;
+  label: string;
+  sessions: SessionInfo[];
+}
 
 function newestFirst(a: SessionInfo, b: SessionInfo): number {
   return new Date(b.last_active).getTime() - new Date(a.last_active).getTime();
@@ -787,17 +1092,47 @@ function resolvePinnedDesktopSessions(
     .filter((session): session is SessionInfo => Boolean(session));
 }
 
-function mobilePinnedFallbackSessions(sessions: SessionInfo[]): SessionInfo[] {
-  const substantial = sessions.filter((session) => {
-    const title = session.title?.trim();
-    return (
-      title &&
-      title !== "Untitled" &&
-      title.length > 5 &&
-      session.message_count > 1
-    );
-  });
-  return (substantial.length >= 2 ? substantial : sessions).slice(0, 2);
+function mobileSessionGroupId(session: SessionInfo): MobileSessionGroupId {
+  const activeTime =
+    session.last_active < 1_000_000_000_000
+      ? session.last_active * 1000
+      : session.last_active;
+  const today = new Date();
+  const todayStart = new Date(
+    today.getFullYear(),
+    today.getMonth(),
+    today.getDate(),
+  ).getTime();
+  const yesterdayStart = todayStart - 24 * 60 * 60 * 1000;
+
+  if (activeTime >= todayStart) return "today";
+  if (activeTime >= yesterdayStart) return "yesterday";
+  return "older";
+}
+
+function mobileSessionGroups(sessions: SessionInfo[]): MobileSessionGroup[] {
+  const labels: Record<MobileSessionGroupId, string> = {
+    today: "Today",
+    yesterday: "Yesterday",
+    older: "Older",
+  };
+  const grouped = new Map<MobileSessionGroupId, SessionInfo[]>([
+    ["today", []],
+    ["yesterday", []],
+    ["older", []],
+  ]);
+
+  for (const session of sessions) {
+    grouped.get(mobileSessionGroupId(session))?.push(session);
+  }
+
+  return (["today", "yesterday", "older"] as const)
+    .map((id) => ({
+      id,
+      label: labels[id],
+      sessions: grouped.get(id) ?? [],
+    }))
+    .filter((group) => group.sessions.length > 0);
 }
 
 function SessionsPagination({
@@ -850,6 +1185,7 @@ function SessionsPagination({
 
 function SessionsMobileSearch({
   onSearchChange,
+  onFocusChange,
   search,
   searching,
 }: SessionsMobileSearchProps) {
@@ -858,26 +1194,36 @@ function SessionsMobileSearch({
   return (
     <form
       role="search"
-      className="hermes-session-search-glass shrink-0 border-t border-midground/10 bg-background-base/70 p-3 backdrop-blur-xl sm:hidden"
+      className="hermes-mobile-composer hermes-mobile-app-composer hermes-session-search-glass shrink-0 px-3 py-2 sm:hidden"
       onSubmit={(event) => event.preventDefault()}
     >
-      <div className="flex items-end gap-2 rounded-[1.45rem] border border-midground/15 bg-[color-mix(in_srgb,var(--midground-base)_5%,var(--background-base))] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_10px_30px_rgba(0,0,0,0.22)]">
+      <div className="flex items-end gap-2">
+        <span
+          aria-hidden="true"
+          className="hermes-session-search-icon hermes-ios-tap mb-0.5 grid h-12 w-12 shrink-0 place-items-center rounded-full border border-midground/20 bg-midground/10 p-0 text-midground"
+        >
+          <Search className="h-5 w-5" />
+        </span>
         <Input
           type="search"
-          placeholder="search"
+          placeholder="Search sessions..."
           value={search}
+          onFocus={() => onFocusChange(true)}
+          onBlur={() => {
+            if (!search) onFocusChange(false);
+          }}
           onChange={(event) => onSearchChange(event.target.value)}
-          className="h-12 min-w-0 flex-1 border-0 bg-transparent px-2 py-3 text-base leading-6 text-midground shadow-none [background:transparent] placeholder:text-text-secondary/65 focus-visible:ring-0"
+          className="hermes-mobile-composer-field h-12 min-w-0 flex-1 px-4 py-3 text-base leading-6 shadow-none placeholder:text-text-secondary/65 focus-visible:ring-0"
         />
         {searching && (
-          <Spinner className="mb-4 shrink-0 text-[0.875rem] text-primary" />
+          <Spinner className="mb-3.5 shrink-0 text-[0.875rem] text-primary" />
         )}
         <Button
           type="button"
           onClick={() => onSearchChange("")}
           disabled={!search}
           aria-label={t.common.clear}
-          className="hermes-ios-tap mb-0.5 flex h-12 min-h-12 w-12 min-w-12 shrink-0 items-center justify-center rounded-full border border-midground/20 bg-midground/10 p-0 text-center text-midground shadow-[0_0_24px_rgba(45,212,191,0.16)] disabled:opacity-35 disabled:shadow-none"
+          className="hermes-session-search-clear hermes-ios-tap mb-0.5 flex h-12 min-h-12 w-12 min-w-12 shrink-0 items-center justify-center rounded-full border border-midground/20 bg-midground/10 p-0 text-center text-midground shadow-[0_0_24px_rgba(45,212,191,0.16)] disabled:opacity-35 disabled:shadow-none"
         >
           <span className="grid h-full w-full place-items-center">
             <X className="h-5 w-5" />
@@ -889,63 +1235,551 @@ function SessionsMobileSearch({
 }
 
 function MobilePinnedSessionCard({
+  isOpening,
   onOpen,
+  onMenuOpen,
   resumeInChatEnabled,
   session,
 }: MobilePinnedSessionCardProps) {
-  const sourceInfo = (session.source
-    ? SOURCE_CONFIG[session.source]
-    : null) ?? { icon: Globe, color: "text-muted-foreground" };
-  const SourceIcon = sourceInfo.icon;
   const hasTitle = session.title && session.title !== "Untitled";
   const mobileTone = mobileSessionTone(session);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressOpenedRef = useRef(false);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const startLongPress = () => {
+    clearLongPress();
+    longPressOpenedRef.current = false;
+    longPressTimerRef.current = setTimeout(() => {
+      longPressOpenedRef.current = true;
+      onMenuOpen();
+      longPressTimerRef.current = null;
+    }, MOBILE_LONG_PRESS_MS);
+  };
 
   return (
-    <button
-      type="button"
-      className={`group flex min-h-[4.35rem] min-w-0 flex-col rounded-[0.82rem] border px-2 py-1.5 text-left backdrop-blur-md transition-colors ${mobileTone.pinned}`}
-      disabled={!resumeInChatEnabled}
-      onClick={onOpen}
-    >
-      <div className="flex min-w-0 items-start gap-1 text-midground">
-        <Pin className="mt-0.5 h-3 w-3 shrink-0 fill-current" />
-        <SourceIcon className={`mt-0.5 h-3 w-3 shrink-0 ${sourceInfo.color}`} />
-        <span className="font-mondwest normal-case min-w-0 flex-1 text-[0.74rem] font-medium leading-[1.03] [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden">
-          {hasTitle
-            ? session.title
-            : session.preview
-              ? session.preview.slice(0, 48)
-              : "Untitled session"}
-        </span>
-      </div>
+    <div className="hermes-mobile-pinned-card-wrap relative min-w-0">
+      <button
+        type="button"
+        className={`hermes-mobile-pinned-card group flex min-h-[4.35rem] min-w-0 flex-col rounded-[0.82rem] border px-2 py-1.5 text-left backdrop-blur-md transition-colors ${mobileTone.pinned}`}
+        data-opening={isOpening ? "true" : undefined}
+        disabled={!resumeInChatEnabled}
+        onClick={() => {
+          if (longPressOpenedRef.current) {
+            longPressOpenedRef.current = false;
+            return;
+          }
+          onOpen();
+        }}
+        onPointerDown={startLongPress}
+        onPointerUp={clearLongPress}
+        onPointerLeave={clearLongPress}
+        onPointerCancel={clearLongPress}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          clearLongPress();
+          onMenuOpen();
+        }}
+      >
+        <div className="hermes-mobile-pinned-card-title flex min-w-0 items-start text-midground">
+          <span className="font-mondwest normal-case min-w-0 flex-1 text-[0.74rem] font-medium leading-[1.03] [display:-webkit-box] [-webkit-line-clamp:2] [-webkit-box-orient:vertical] overflow-hidden">
+            {hasTitle
+              ? session.title
+              : session.preview
+                ? session.preview.slice(0, 48)
+                : "Untitled session"}
+          </span>
+        </div>
 
-      <div className="mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 font-mono-ui text-[0.52rem] leading-tight text-text-secondary">
-        <span className="truncate">
-          {(session.model ?? "unknown").split("/").pop()}
+        <div className="hermes-mobile-pinned-card-meta mt-1 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 font-mono-ui text-[0.52rem] leading-tight text-text-secondary">
+          <span>{session.message_count} msgs</span>
+          <span className="hermes-mobile-session-dot">·</span>
+          <span>{timeAgo(session.last_active)}</span>
+        </div>
+      </button>
+    </div>
+  );
+}
+
+function MobilePinnedActionSheet({
+  onArchive,
+  onClose,
+  onDelete,
+  onRename,
+  onUnpin,
+  session,
+}: MobilePinnedActionSheetProps) {
+  if (!session) return null;
+  const title =
+    session.title && session.title !== "Untitled"
+      ? session.title
+      : session.preview
+        ? session.preview.slice(0, 72)
+        : "Untitled session";
+
+  return (
+    <div
+      className="hermes-mobile-action-sheet-backdrop sm:hidden"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="hermes-mobile-action-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Pinned session actions"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="hermes-mobile-action-sheet-handle" aria-hidden="true" />
+        <div className="hermes-mobile-action-sheet-title">
+          <span>{title}</span>
+          <span>{session.message_count} msgs · {timeAgo(session.last_active)}</span>
+        </div>
+        <div className="hermes-mobile-action-sheet-actions">
+          <button type="button" onClick={onUnpin}>
+            <Pin className="h-5 w-5" />
+            <span>Unpin</span>
+          </button>
+          <button type="button" onClick={onRename}>
+            <Edit3 className="h-5 w-5" />
+            <span>Rename</span>
+          </button>
+          <button type="button" onClick={onArchive}>
+            <Archive className="h-5 w-5" />
+            <span>Archive</span>
+          </button>
+          <button
+            type="button"
+            className="hermes-mobile-action-sheet-danger"
+            onClick={onDelete}
+          >
+            <Trash2 className="h-5 w-5" />
+            <span>Delete</span>
+          </button>
+        </div>
+        <button
+          type="button"
+          className="hermes-mobile-action-sheet-cancel"
+          onClick={onClose}
+        >
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function MobileAttentionInbox({
+  attentionCount,
+  notificationPermission,
+  onOpenSession,
+  onRequestNotifications,
+  sessions,
+}: {
+  attentionCount: number;
+  notificationPermission: NotificationPermission | "unsupported";
+  onOpenSession: (session: SessionInfo) => void;
+  onRequestNotifications: () => Promise<void>;
+  sessions: SessionInfo[];
+}) {
+  const waiting = attentionCount > 0;
+  const visible = sessions.slice(0, 3);
+  const hasLiveWork = visible.some(
+    (session) =>
+      session.is_active ||
+      Boolean(session.pending_kind) ||
+      Boolean(session.live_status && session.live_status !== "idle"),
+  );
+  const showRows = waiting || hasLiveWork;
+  const title = waiting ? "Needs input" : hasLiveWork ? "Active work" : "All clear";
+  const detail = waiting
+    ? `${attentionCount} decision${attentionCount === 1 ? "" : "s"} waiting`
+    : hasLiveWork
+      ? `${visible.length} live session${visible.length === 1 ? "" : "s"} to check`
+      : "No live sessions need you right now";
+
+  return (
+    <section
+      className="hermes-mobile-attention-inbox sm:hidden"
+      data-state={waiting ? "waiting" : hasLiveWork ? "active" : "clear"}
+    >
+      <div className="hermes-mobile-attention-head">
+        <span className="hermes-mobile-attention-icon">
+          {waiting ? <AlertTriangle className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4" />}
         </span>
-        <span className="text-midground/38">•</span>
-        <span>{session.message_count} msgs</span>
-        {session.tool_call_count > 0 && (
-          <>
-            <span className="text-midground/38">•</span>
-            <span>{session.tool_call_count} tools</span>
-          </>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate">{title}</span>
+          <span className="block truncate">{detail}</span>
+        </span>
+        {notificationPermission === "default" && (
+          <button
+            type="button"
+            className="hermes-mobile-attention-alerts"
+            onClick={() => void onRequestNotifications()}
+          >
+            Notify me
+          </button>
         )}
       </div>
+      {showRows && visible.length > 0 && (
+        <div className="hermes-mobile-attention-list">
+          {visible.map((session) => (
+            <button
+              key={`attention-${session.id}`}
+              type="button"
+              className="hermes-mobile-attention-row"
+              onClick={() => onOpenSession(session)}
+            >
+              <span className="min-w-0 flex-1">
+                <span>{sessionDisplayTitle(session)}</span>
+                <span>
+                  {session.pending_kind
+                    ? `${pendingKindLabel(session.pending_kind)} waiting`
+                    : session.live_status && session.live_status !== "idle"
+                      ? liveStatusLabel(session.live_status)
+                    : session.is_active
+                      ? "Live"
+                      : timeAgo(session.last_active)} · {session.message_count} msgs
+                </span>
+              </span>
+              <Play className="h-3.5 w-3.5" />
+            </button>
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
 
-      <div className="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5 font-mono-ui text-[0.52rem] leading-tight text-text-secondary">
-        <span>{timeAgo(session.last_active)}</span>
-        <span className="text-midground/38">•</span>
-        <span className="truncate">Pinned</span>
-      </div>
+function MobileSessionPreviewSheet({
+  onClose,
+  onContinue,
+  onInterrupt,
+  onResolved,
+  session,
+}: {
+  onClose: () => void;
+  onContinue: (id: string) => void;
+  onInterrupt: (session: SessionInfo) => Promise<void>;
+  onResolved: () => void;
+  session: SessionInfo | null;
+}) {
+  const [messages, setMessages] = useState<SessionMessage[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [responseDraft, setResponseDraft] = useState("");
+  const [responding, setResponding] = useState<string | null>(null);
+  const [responseError, setResponseError] = useState<string | null>(null);
+  const [interrupting, setInterrupting] = useState(false);
 
-      <div className="mt-auto flex items-end justify-end gap-2 pt-0.5">
-        <span className="inline-flex items-center gap-0.5 font-mono-ui text-[0.54rem] text-midground">
-          Open
-          <ChevronRight className="h-2.5 w-2.5 transition-transform group-hover:translate-x-0.5" />
-        </span>
+  useEffect(() => {
+    if (!session) {
+      // Sheet close resets the preview payload for the next session.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setMessages(null);
+      setError(null);
+      setResponseDraft("");
+      setResponseError(null);
+      setResponding(null);
+      setInterrupting(false);
+      return;
+    }
+
+    const shouldLoadRecentMessages =
+      !session.pending_kind &&
+      !(session.live_status && session.live_status !== "idle");
+
+    if (!shouldLoadRecentMessages) {
+      setLoading(false);
+      setError(null);
+      setMessages(null);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setMessages(null);
+    api
+      .getSessionMessages(session.id)
+      .then((resp) => {
+        if (!cancelled) {
+          setMessages(mobilePreviewChatMessages(resp.messages));
+        }
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
+
+  if (!session) return null;
+
+  const isPending = Boolean(session.pending_kind);
+  const isLiveActive = !isPending && Boolean(session.live_status && session.live_status !== "idle");
+  const submitResponse = async (
+    action: string,
+    response: { answer?: string; choice?: BlockerChoice; value?: string },
+  ) => {
+    setResponding(action);
+    setResponseError(null);
+    try {
+      await sendWaitingInputResponse(session, response);
+      navigator.vibrate?.(action === "deny" ? 12 : 8);
+      setResponseDraft("");
+      onResolved();
+      onClose();
+    } catch (err) {
+      setResponseError(err instanceof Error ? err.message : String(err));
+      setResponding(null);
+    }
+  };
+  const busy = responding !== null;
+  const pendingChoices = Array.isArray(session.pending_choices)
+    ? session.pending_choices.filter(Boolean)
+    : [];
+  const handleInterrupt = async () => {
+    setInterrupting(true);
+    setResponseError(null);
+    try {
+      await onInterrupt(session);
+      navigator.vibrate?.(12);
+      onResolved();
+      onClose();
+    } catch (err) {
+      setResponseError(err instanceof Error ? err.message : String(err));
+      setInterrupting(false);
+    }
+  };
+
+  return (
+    <div
+      className="hermes-mobile-action-sheet-backdrop hermes-mobile-preview-backdrop sm:hidden"
+      role="presentation"
+      onClick={onClose}
+    >
+      <div
+        className="hermes-mobile-action-sheet hermes-mobile-session-preview-sheet"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Session preview"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="hermes-mobile-action-sheet-handle" aria-hidden="true" />
+        <div className="hermes-mobile-preview-title">
+          <span>{sessionDisplayTitle(session)}</span>
+          <span>
+            {session.pending_kind
+              ? `${pendingKindLabel(session.pending_kind)} waiting`
+              : session.live_status && session.live_status !== "idle"
+                ? `${liveStatusLabel(session.live_status)} · ${timeAgo(session.last_active)}`
+              : `${session.source ?? "local"} · ${session.message_count} msgs · ${timeAgo(session.last_active)}`}
+          </span>
+        </div>
+        <p className="hermes-mobile-preview-summary">{sessionPreviewText(session)}</p>
+        {isLiveActive && (
+          <div className="hermes-mobile-preview-active" aria-label="Active work controls">
+            <div className="hermes-mobile-preview-active-head">
+              <Clock className="h-4 w-4" />
+              <span>{liveStatusLabel(session.live_status)}</span>
+            </div>
+            <div className="hermes-mobile-preview-active-body">
+              {session.live_inflight_user && (
+                <div>
+                  <span>Request</span>
+                  <p>{session.live_inflight_user}</p>
+                </div>
+              )}
+              {session.live_inflight_assistant && (
+                <div>
+                  <span>Latest</span>
+                  <p>{session.live_inflight_assistant}</p>
+                </div>
+              )}
+              {!session.live_inflight_user && !session.live_inflight_assistant && (
+                <div>
+                  <span>Status</span>
+                  <p>{sessionPreviewText(session)}</p>
+                </div>
+              )}
+              <div className="hermes-mobile-preview-active-meta">
+                <span>{session.model || "model pending"}</span>
+                <span>{timeAgo(session.last_active)}</span>
+              </div>
+            </div>
+            <div className="hermes-mobile-preview-active-actions">
+              <button
+                type="button"
+                disabled={interrupting}
+                onClick={() => void handleInterrupt()}
+              >
+                {interrupting ? "Stopping..." : "Interrupt"}
+              </button>
+            </div>
+            {responseError && (
+              <div className="hermes-mobile-preview-response-error">{responseError}</div>
+            )}
+          </div>
+        )}
+        {isPending && (
+          <div className="hermes-mobile-preview-blocker" aria-label="Waiting input controls">
+            <div className="hermes-mobile-preview-blocker-head">
+              <AlertTriangle className="h-4 w-4" />
+              <span>{pendingKindLabel(session.pending_kind)} needed</span>
+            </div>
+            {session.pending_kind === "approval" && (
+              <div className="hermes-mobile-preview-blocker-body">
+                <p>{session.pending_description || "Hermes needs approval to continue."}</p>
+                {session.pending_command && (
+                  <code>{session.pending_command}</code>
+                )}
+                <div className="hermes-mobile-preview-blocker-grid">
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submitResponse("deny", { choice: "deny" })}
+                  >
+                    {responding === "deny" ? "Sending..." : "Deny"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submitResponse("once", { choice: "once" })}
+                  >
+                    {responding === "once" ? "Sending..." : "Allow once"}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    onClick={() => void submitResponse("session", { choice: "session" })}
+                  >
+                    {responding === "session" ? "Sending..." : "Allow session"}
+                  </button>
+                  {session.pending_allow_permanent !== false && (
+                    <button
+                      type="button"
+                      disabled={busy}
+                      onClick={() => void submitResponse("always", { choice: "always" })}
+                    >
+                      {responding === "always" ? "Sending..." : "Allow always"}
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+            {session.pending_kind === "clarify" && (
+              <div className="hermes-mobile-preview-blocker-body">
+                <p>{session.pending_question || "Hermes needs an answer."}</p>
+                {pendingChoices.length > 0 && (
+                  <div className="hermes-mobile-preview-choice-list">
+                    {pendingChoices.map((choice) => (
+                      <button
+                        key={choice}
+                        type="button"
+                        disabled={busy}
+                        onClick={() => void submitResponse("clarify", { answer: choice })}
+                      >
+                        {choice}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <form
+                  className="hermes-mobile-preview-response-form"
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    if (responseDraft.trim()) {
+                      void submitResponse("clarify", { answer: responseDraft.trim() });
+                    }
+                  }}
+                >
+                  <textarea
+                    value={responseDraft}
+                    rows={2}
+                    disabled={busy}
+                    onChange={(event) => setResponseDraft(event.target.value)}
+                    placeholder="Type an answer"
+                  />
+                  <button type="submit" disabled={busy || !responseDraft.trim()}>
+                    Send
+                  </button>
+                </form>
+              </div>
+            )}
+            {(session.pending_kind === "sudo" || session.pending_kind === "secret") && (
+              <form
+                className="hermes-mobile-preview-blocker-body"
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  if (responseDraft) {
+                    void submitResponse(session.pending_kind || "secure", { value: responseDraft });
+                  }
+                }}
+              >
+                <p>
+                  {session.pending_kind === "sudo"
+                    ? "Enter the password for this one sudo request."
+                    : session.pending_prompt || `Enter ${session.pending_env_var || "the requested secret"}.`}
+                </p>
+                <div className="hermes-mobile-preview-response-form">
+                  <input
+                    value={responseDraft}
+                    disabled={busy}
+                    onChange={(event) => setResponseDraft(event.target.value)}
+                    placeholder={session.pending_kind === "sudo" ? "Password" : session.pending_env_var || "Secret value"}
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  <button type="submit" disabled={busy || !responseDraft}>
+                    Send
+                  </button>
+                </div>
+              </form>
+            )}
+            {responseError && (
+              <div className="hermes-mobile-preview-response-error">{responseError}</div>
+            )}
+          </div>
+        )}
+        {!isLiveActive && !isPending && (
+          <div className="hermes-mobile-preview-messages" aria-label="Recent messages">
+            {loading && <div className="hermes-mobile-preview-empty">Loading preview...</div>}
+            {error && <div className="hermes-mobile-preview-empty">{error}</div>}
+            {!loading && !error && messages?.length === 0 && (
+              <div className="hermes-mobile-preview-empty">No messages in this session yet.</div>
+            )}
+            {!loading && !error && messages?.map((message, index) => (
+              <div key={`${message.role}-${message.timestamp ?? index}`} className="hermes-mobile-preview-message">
+                <span>{message.role === "assistant" ? "Hermes" : "You"}</span>
+                <p>{message.content || "No content"}</p>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="hermes-mobile-preview-actions">
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+          <button type="button" onClick={() => onContinue(session.id)}>
+            <Play className="h-4 w-4" />
+            <span>Continue here</span>
+          </button>
+        </div>
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -955,6 +1789,7 @@ export default function SessionsPage() {
   const [page, setPage] = useState(0);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [searchResults, setSearchResults] = useState<
     SessionSearchResult[] | null
@@ -962,11 +1797,28 @@ export default function SessionsPage() {
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
+  const mobileScrollRef = useRef<HTMLDivElement | null>(null);
+  const sessionHistoryRef = useRef<HTMLDivElement | null>(null);
+  const pinnedRailPointerXRef = useRef<number | null>(null);
+  const pinnedRailTouchXRef = useRef<number | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
+  const [mobileWaitingInputSessions, setMobileWaitingInputSessions] = useState<SessionInfo[]>([]);
+  const [mobileActiveWorkSessions, setMobileActiveWorkSessions] = useState<SessionInfo[]>([]);
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(() =>
+    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+  );
   const [desktopPinnedSessionIds, setDesktopPinnedSessionIds] = useState<string[]>(
     () => readDesktopPinnedSessionIds(),
   );
+  const [pinnedMenuId, setPinnedMenuId] = useState<string | null>(null);
+  const [openingSessionId, setOpeningSessionId] = useState<string | null>(null);
+  const [previewSessionId, setPreviewSessionId] = useState<string | null>(null);
+  const [mobileAttentionCount, setMobileAttentionCount] = useState(0);
+  const [mobileKeyboardInset, setMobileKeyboardInset] = useState(0);
+  const [activePinnedPage, setActivePinnedPage] = useState(0);
+  const [pinnedRailRubberband, setPinnedRailRubberband] =
+    useState<PinnedRailRubberbandEdge | null>(null);
   const [sessionListScrolled, setSessionListScrolled] = useState(false);
   const [sessionListRubberband, setSessionListRubberband] =
     useState<SessionListRubberbandEdge | null>(null);
@@ -995,6 +1847,10 @@ export default function SessionsPage() {
   const lastClickedIndexRef = useRef<number | null>(null);
   const sessionListRubberbandTimerRef =
     useRef<ReturnType<typeof setTimeout> | null>(null);
+  const pinnedRailRubberbandTimerRef =
+    useRef<ReturnType<typeof setTimeout> | null>(null);
+  const initializedWaitingAlertsRef = useRef(false);
+  const notifiedWaitingKeysRef = useRef<Set<string>>(new Set());
   const sessionListTouchYRef = useRef<number | null>(null);
   const [deleteSelectedOpen, setDeleteSelectedOpen] = useState(false);
   const [deletingSelected, setDeletingSelected] = useState(false);
@@ -1007,8 +1863,26 @@ export default function SessionsPage() {
   const { setAfterTitle, setEnd } = usePageHeader();
   const { activeAction, actionStatus, dismissLog } = useSystemActions();
   const navigate = useNavigate();
+  const location = useLocation();
+  const forceMobileSurface = new URLSearchParams(location.search).get("mobile") === "1";
   const resumeInChatEnabled = isDashboardEmbeddedChatEnabled();
-  const isMobile = useBelowBreakpoint(640);
+  const belowMobileBreakpoint = useBelowBreakpoint(640);
+  const isMobile = belowMobileBreakpoint || forceMobileSurface;
+
+  const requestNotifications = useCallback(async () => {
+    if (typeof Notification === "undefined") {
+      setNotificationPermission("unsupported");
+      showToast("Browser alerts are unavailable here", "error");
+      return;
+    }
+    const next = await Notification.requestPermission();
+    setNotificationPermission(next);
+    if (next === "granted") {
+      showToast("Mobile attention alerts enabled", "success");
+    } else if (next === "denied") {
+      showToast("Alerts blocked in browser settings", "error");
+    }
+  }, [showToast]);
 
   const triggerSessionListRubberband = useCallback(
     (edge: SessionListRubberbandEdge) => {
@@ -1038,6 +1912,62 @@ export default function SessionsPage() {
     },
     [triggerSessionListRubberband],
   );
+
+  const syncSessionListScrolled = useCallback((el: HTMLDivElement) => {
+    const update = () => {
+      const scrolled = el.scrollTop > 260;
+      setSessionListScrolled((current) =>
+        current === scrolled ? current : scrolled,
+      );
+    };
+
+    update();
+    window.requestAnimationFrame(update);
+    window.setTimeout(update, 220);
+    window.setTimeout(update, 620);
+  }, []);
+
+  const triggerPinnedRailRubberband = useCallback(
+    (edge: PinnedRailRubberbandEdge) => {
+      if (!isMobile) return;
+      if (pinnedRailRubberbandTimerRef.current) {
+        clearTimeout(pinnedRailRubberbandTimerRef.current);
+      }
+      setPinnedRailRubberband(null);
+      window.requestAnimationFrame(() => setPinnedRailRubberband(edge));
+      pinnedRailRubberbandTimerRef.current = setTimeout(() => {
+        setPinnedRailRubberband(null);
+        pinnedRailRubberbandTimerRef.current = null;
+      }, 520);
+    },
+    [isMobile],
+  );
+
+  const maybeRubberbandPinnedRail = useCallback(
+    (el: HTMLDivElement, deltaX: number) => {
+      const maxScrollLeft = el.scrollWidth - el.clientWidth;
+      if (maxScrollLeft <= 1 || Math.abs(deltaX) < 10) return;
+      if (el.scrollLeft <= 1 && deltaX < 0) {
+        triggerPinnedRailRubberband("left");
+      } else if (el.scrollLeft >= maxScrollLeft - 1 && deltaX > 0) {
+        triggerPinnedRailRubberband("right");
+      }
+    },
+    [triggerPinnedRailRubberband],
+  );
+
+  const updateActivePinnedPage = useCallback((el: HTMLDivElement, pageCount: number) => {
+    const maxScrollLeft = el.scrollWidth - el.clientWidth;
+    const lastPage = Math.max(0, pageCount - 1);
+    if (maxScrollLeft <= 1 || lastPage === 0) {
+      setActivePinnedPage(0);
+      return;
+    }
+    const page = Math.round((el.scrollLeft / maxScrollLeft) * lastPage);
+    setActivePinnedPage((current) =>
+      current === page ? current : Math.max(0, Math.min(lastPage, page)),
+    );
+  }, []);
 
   const refreshEmptyCount = useCallback(() => {
     api
@@ -1104,6 +2034,26 @@ export default function SessionsPage() {
       .catch(() => {});
   }, []);
 
+  const loadMobileWaitingInput = useCallback(() => {
+    api
+      .getWaitingInputSessions(10)
+      .then((r) => {
+        const waiting = r.sessions.slice().sort(newestFirst);
+        setMobileWaitingInputSessions(waiting);
+        setMobileAttentionCount(r.total);
+      })
+      .catch(() => {});
+  }, []);
+
+  const loadMobileActiveWork = useCallback(() => {
+    api
+      .getActiveWorkSessions(10)
+      .then((r) => {
+        setMobileActiveWorkSessions(r.sessions.slice().sort(newestFirst));
+      })
+      .catch(() => {});
+  }, []);
+
   useEffect(() => {
     loadStats();
   }, [loadStats]);
@@ -1125,11 +2075,13 @@ export default function SessionsPage() {
         .getSessions(DESKTOP_PINNED_FETCH_LIMIT)
         .then((r) => setOverviewSessions(r.sessions.slice().sort(newestFirst)))
         .catch(() => {});
+      loadMobileWaitingInput();
+      loadMobileActiveWork();
     };
     loadOverview();
     const id = setInterval(loadOverview, 5000);
     return () => clearInterval(id);
-  }, []);
+  }, [loadMobileActiveWork, loadMobileWaitingInput]);
 
   useEffect(() => {
     const refreshPinned = () =>
@@ -1143,6 +2095,31 @@ export default function SessionsPage() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+
+    const refreshSharedPinned = () => {
+      api
+        .getPinnedSessions()
+        .then((resp) => {
+          if (!cancelled) {
+            setDesktopPinnedSessionIds(resp.ids);
+          }
+        })
+        .catch(() => {
+          // Shared pins are best-effort; local dashboard storage remains a
+          // fallback for same-origin development builds.
+        });
+    };
+
+    refreshSharedPinned();
+    window.addEventListener("focus", refreshSharedPinned);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshSharedPinned);
+    };
+  }, []);
+
+  useEffect(() => {
     const el = logScrollRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [actionStatus?.lines]);
@@ -1152,8 +2129,66 @@ export default function SessionsPage() {
       if (sessionListRubberbandTimerRef.current) {
         clearTimeout(sessionListRubberbandTimerRef.current);
       }
+      if (pinnedRailRubberbandTimerRef.current) {
+        clearTimeout(pinnedRailRubberbandTimerRef.current);
+      }
     };
   }, []);
+
+  useEffect(() => {
+    const onMobileAttention = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
+      const count = typeof detail?.count === "number" && Number.isFinite(detail.count)
+        ? Math.max(0, Math.floor(detail.count))
+        : 0;
+      setMobileAttentionCount(count);
+    };
+    window.addEventListener("hermes-mobile-attention", onMobileAttention);
+    return () => window.removeEventListener("hermes-mobile-attention", onMobileAttention);
+  }, []);
+
+  useEffect(() => {
+    const currentKeys = new Set(mobileWaitingInputSessions.map(waitingInputAlertKey));
+    for (const key of Array.from(notifiedWaitingKeysRef.current)) {
+      if (!currentKeys.has(key)) notifiedWaitingKeysRef.current.delete(key);
+    }
+
+    if (!initializedWaitingAlertsRef.current) {
+      initializedWaitingAlertsRef.current = true;
+      notifiedWaitingKeysRef.current = currentKeys;
+      return;
+    }
+
+    const fresh = mobileWaitingInputSessions.filter((session) => {
+      const key = waitingInputAlertKey(session);
+      if (notifiedWaitingKeysRef.current.has(key)) return false;
+      notifiedWaitingKeysRef.current.add(key);
+      return true;
+    });
+    if (fresh.length === 0) return;
+
+    const primary = fresh[0];
+    const title = waitingInputAlertTitle(primary);
+    const body = waitingInputAlertBody(primary);
+    if (
+      typeof Notification !== "undefined" &&
+      notificationPermission === "granted" &&
+      document.visibilityState !== "visible"
+    ) {
+      const note = new Notification(title, {
+        body,
+        tag: waitingInputAlertKey(primary),
+      });
+      note.onclick = () => {
+        window.focus();
+        window.location.assign("/sessions?mobile=1");
+      };
+      return;
+    }
+
+    navigator.vibrate?.(12);
+    showToast(title, "success");
+  }, [mobileWaitingInputSessions, notificationPermission, showToast]);
 
   // Wrapped setters that ALSO clear the bulk selection. The user's
   // mental model is "I'm selecting what I can see" — carrying a
@@ -1173,6 +2208,7 @@ export default function SessionsPage() {
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
+      if (value) setSearchFocused(true);
       clearSelection();
     },
     [clearSelection],
@@ -1184,6 +2220,21 @@ export default function SessionsPage() {
     },
     [clearSelection],
   );
+
+  const openMobileSession = useCallback(
+    (sessionId: string) => {
+      setOpeningSessionId(sessionId);
+      setPreviewSessionId(null);
+      window.setTimeout(() => {
+        navigate(mobileChatResumePath(sessionId));
+      }, 145);
+    },
+    [navigate],
+  );
+
+  const openMobilePreview = useCallback((sessionId: string) => {
+    setPreviewSessionId(sessionId);
+  }, []);
 
   // Debounced FTS search
   useEffect(() => {
@@ -1403,6 +2454,61 @@ export default function SessionsPage() {
     [showToast, loadStats],
   );
 
+  const persistPinnedSessionIds = useCallback(
+    (ids: string[]) => {
+      setDesktopPinnedSessionIds(ids);
+      try {
+        window.localStorage.setItem(
+          DESKTOP_PINNED_SESSIONS_KEY,
+          JSON.stringify(ids),
+        );
+      } catch {
+        // Local storage is a convenience only.
+      }
+      void api.setPinnedSessions(ids).catch(() => {
+        showToast("Pinned sessions will sync after the dashboard reconnects", "error");
+      });
+    },
+    [showToast],
+  );
+
+  const handlePinSession = useCallback(
+    (session: SessionInfo) => {
+      const pinId = sessionPinId(session);
+      if (desktopPinnedSessionIds.includes(pinId)) return;
+      persistPinnedSessionIds([...desktopPinnedSessionIds, pinId]);
+      showToast("Pinned session", "success");
+    },
+    [desktopPinnedSessionIds, persistPinnedSessionIds, showToast],
+  );
+
+  const handleUnpinSession = useCallback(
+    (session: SessionInfo) => {
+      const ids = new Set([session.id, sessionPinId(session)]);
+      const next = desktopPinnedSessionIds.filter((id) => !ids.has(id));
+      persistPinnedSessionIds(next);
+      setPinnedMenuId(null);
+      showToast("Unpinned session", "success");
+    },
+    [desktopPinnedSessionIds, persistPinnedSessionIds, showToast],
+  );
+
+  const handleArchiveSession = useCallback(
+    async (session: SessionInfo) => {
+      try {
+        await api.archiveSession(session.id, true);
+        setSessions((prev) => prev.filter((s) => s.id !== session.id));
+        setOverviewSessions((prev) => prev.filter((s) => s.id !== session.id));
+        setTotal((prev) => Math.max(0, prev - 1));
+        showToast("Archived session", "success");
+        loadStats();
+      } catch {
+        showToast("Failed to archive session", "error");
+      }
+    },
+    [loadStats, showToast],
+  );
+
   const handleExport = useCallback(
     async (id: string) => {
       try {
@@ -1473,8 +2579,8 @@ export default function SessionsPage() {
       : sessions
   ).slice().sort(newestFirst);
   const sessionPool = useMemo(
-    () => uniqueSessions([...overviewSessions, ...sessions]),
-    [overviewSessions, sessions],
+    () => uniqueSessions([...mobileWaitingInputSessions, ...mobileActiveWorkSessions, ...overviewSessions, ...sessions]),
+    [mobileActiveWorkSessions, mobileWaitingInputSessions, overviewSessions, sessions],
   );
   const pinnedDesktopSessions = useMemo(
     () => resolvePinnedDesktopSessions(desktopPinnedSessionIds, sessionPool),
@@ -1499,13 +2605,19 @@ export default function SessionsPage() {
   const mobilePinnedSessions = useMemo(
     () =>
       isMobile && !isSearching
-        ? (pinnedDesktopSessions.length > 0
-          ? pinnedDesktopSessions
-          : mobilePinnedFallbackSessions(filtered))
+        ? pinnedDesktopSessions
         : [],
-    [filtered, isMobile, isSearching, pinnedDesktopSessions],
+    [isMobile, isSearching, pinnedDesktopSessions],
   );
   const showMobilePinnedSessions = mobilePinnedSessions.length > 0;
+  const mobilePinnedPageCount = Math.max(
+    1,
+    Math.ceil(mobilePinnedSessions.length / 2),
+  );
+  const displayedActivePinnedPage = Math.min(
+    activePinnedPage,
+    mobilePinnedPageCount - 1,
+  );
   const mobilePinnedKeys = useMemo(
     () =>
       new Set(
@@ -1523,6 +2635,32 @@ export default function SessionsPage() {
           !mobilePinnedKeys.has(sessionPinId(session)),
       )
     : filtered;
+  const mobileGroups = useMemo(
+    () => mobileSessionGroups(visibleSessions),
+    [visibleSessions],
+  );
+  const previewSession = useMemo(
+    () => sessionPool.find((session) => session.id === previewSessionId) ?? null,
+    [previewSessionId, sessionPool],
+  );
+  const mobileAttentionSessions = useMemo(
+    () => {
+      if (mobileWaitingInputSessions.length > 0) {
+        return mobileWaitingInputSessions.slice().sort(newestFirst).slice(0, 3);
+      }
+      if (mobileActiveWorkSessions.length > 0) {
+        return mobileActiveWorkSessions.slice().sort(newestFirst).slice(0, 3);
+      }
+      return sessionPool
+        .filter((session) => session.is_active || isRecentlyUpdatedSession(session))
+        .sort((a, b) => {
+          if (a.is_active !== b.is_active) return a.is_active ? -1 : 1;
+          return newestFirst(a, b);
+        })
+        .slice(0, 3);
+    },
+    [mobileActiveWorkSessions, mobileWaitingInputSessions, sessionPool],
+  );
 
   useEffect(() => {
     // Searching forces the mobile sessions surface back to list mode.
@@ -1535,6 +2673,36 @@ export default function SessionsPage() {
     // eslint-disable-next-line react-hooks/set-state-in-effect
     setSessionListScrolled(false);
   }, [search, visibleSessions.length]);
+
+  useEffect(() => {
+    if (!isMobile || !searchFocused) return;
+    mobileScrollRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  }, [isMobile, searchFocused, search]);
+
+  useEffect(() => {
+    if (!isMobile || typeof window === "undefined" || !window.visualViewport) {
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    const updateKeyboardInset = () => {
+      const inset = Math.max(
+        0,
+        window.innerHeight - viewport.height - viewport.offsetTop,
+      );
+      setMobileKeyboardInset((current) =>
+        Math.abs(current - inset) < 1 ? current : Math.round(inset),
+      );
+    };
+
+    updateKeyboardInset();
+    viewport.addEventListener("resize", updateKeyboardInset);
+    viewport.addEventListener("scroll", updateKeyboardInset);
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardInset);
+      viewport.removeEventListener("scroll", updateKeyboardInset);
+    };
+  }, [isMobile]);
 
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
@@ -1567,11 +2735,36 @@ export default function SessionsPage() {
     );
   }
 
+  const activePinnedActionSession =
+    pinnedMenuId !== null
+      ? mobilePinnedSessions.find((session) => session.id === pinnedMenuId) ?? null
+      : null;
+
   return (
-    <div className="hermes-mobile-card hermes-ios-surface hermes-mythic-frame hermes-mobile-sessions-shell relative isolate flex min-h-0 w-full max-w-full flex-col overflow-hidden rounded-[1.65rem] sm:gap-4 sm:overflow-visible sm:rounded-none sm:border-0 sm:bg-transparent sm:shadow-none sm:backdrop-blur-0 sm:[background:transparent] sm:[backdrop-filter:none]">
-      <span aria-hidden="true" className="hermes-mythic-art hermes-mythic-art--sessions" />
-      <PluginSlot name="sessions:top" />
+    <div
+      data-force-mobile-sessions={forceMobileSurface ? "true" : "false"}
+      className="hermes-mobile-sessions-shell hermes-mobile-app relative isolate flex min-h-0 w-full max-w-full flex-col overflow-hidden rounded-[1.65rem] sm:gap-4 sm:overflow-visible sm:rounded-none sm:border-0 sm:bg-transparent sm:shadow-none sm:backdrop-blur-0 sm:[background:transparent] sm:[backdrop-filter:none]"
+      style={
+        isMobile
+          ? ({
+              "--hermes-mobile-keyboard-inset": `${mobileKeyboardInset}px`,
+            } as React.CSSProperties)
+          : undefined
+      }
+    >
+      {!forceMobileSurface && <PluginSlot name="sessions:top" />}
       <Toast toast={toast} />
+      <MobileSessionPreviewSheet
+        session={previewSession}
+        onClose={() => setPreviewSessionId(null)}
+        onContinue={openMobileSession}
+        onInterrupt={async (session) => {
+          await interruptLiveSession(session);
+          loadMobileActiveWork();
+          loadMobileWaitingInput();
+        }}
+        onResolved={loadMobileWaitingInput}
+      />
 
       <DeleteConfirmDialog
         open={sessionDelete.isOpen}
@@ -1667,31 +2860,154 @@ export default function SessionsPage() {
         </DialogContent>
       </Dialog>
 
-      <div className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-4 sm:hidden">
-        <div
-          className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground uppercase"
-          style={{ mixBlendMode: "plus-lighter" }}
+      <div className="hermes-mobile-sessions-header hermes-mobile-app-header grid h-14 shrink-0 grid-cols-[2.75rem_1fr_2.75rem] items-center gap-2 border-b border-current/20 px-4 sm:hidden">
+        <button
+          type="button"
+          aria-label="Back to chat"
+          onClick={() => navigate("/chat?mobile=1")}
+          className="hermes-mobile-back-button hermes-ios-tap grid h-11 w-11 place-items-center rounded-full text-[1.85rem] leading-none"
         >
-          Sessions
+          ‹
+        </button>
+        <div className="mx-auto inline-flex min-w-0 items-center justify-center gap-2">
+          <span className="hermes-mobile-shield grid h-7 w-7 shrink-0 place-items-center rounded-full text-white">
+            <MessageSquare className="h-4 w-4" />
+          </span>
+          <span className="truncate text-[1.05rem] font-semibold tracking-[-0.02em]">
+            Sessions
+          </span>
         </div>
+        <span aria-hidden="true" />
       </div>
 
       <div
-        className="hermes-mobile-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4 pt-1 max-sm:overflow-hidden sm:contents sm:overflow-visible sm:p-0"
+        ref={mobileScrollRef}
+        className="hermes-mobile-scroll hermes-mobile-sessions-scroll flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 pb-4 pt-3 max-sm:overflow-hidden sm:contents sm:overflow-visible sm:p-0"
         data-history-scrolled={sessionListScrolled ? "true" : "false"}
       >
 
+      {isMobile && !isSearching && (
+        <MobileAttentionInbox
+          attentionCount={mobileAttentionCount}
+          notificationPermission={notificationPermission}
+          sessions={mobileAttentionSessions}
+          onRequestNotifications={requestNotifications}
+          onOpenSession={(session) => openMobilePreview(session.id)}
+        />
+      )}
+
       {showMobilePinnedSessions && (
         <section className="hermes-session-pinned-glass px-0 sm:hidden">
-          <div className="grid min-w-0 grid-cols-2 gap-1.5">
-            {mobilePinnedSessions.map((s) => (
-              <MobilePinnedSessionCard
-                key={`pinned-${s.id}`}
-                session={s}
-                onOpen={() =>
-                  navigate(`/chat?resume=${encodeURIComponent(s.id)}`)
-                }
-                resumeInChatEnabled={resumeInChatEnabled}
+          <button
+            type="button"
+            className="hermes-mobile-pinned-compact"
+            onClick={() => {
+              sessionHistoryRef.current?.scrollTo({
+                top: 0,
+                behavior: "smooth",
+              });
+              mobileScrollRef.current?.scrollTo({
+                top: 0,
+                behavior: "smooth",
+              });
+            }}
+          >
+            <span>Continue</span>
+            <span>{mobilePinnedSessions.length} pinned</span>
+          </button>
+          <div className="hermes-mobile-pinned-header mb-2 flex items-center justify-between gap-2 px-1">
+            <div className="font-mono-ui text-[0.64rem] font-medium uppercase tracking-[0.16em] text-emerald-100/80">
+              Continue
+            </div>
+            <div className="font-mono-ui text-[0.62rem] uppercase tracking-[0.12em] text-text-secondary">
+              {mobilePinnedSessions.length} pinned
+            </div>
+          </div>
+          <div
+            className="hermes-mobile-pinned-grid grid min-w-0 grid-cols-2 gap-1.5"
+            data-pinned-rubberband={pinnedRailRubberband ?? undefined}
+            onScroll={(event) =>
+              updateActivePinnedPage(
+                event.currentTarget,
+                mobilePinnedPageCount,
+              )
+            }
+            onPointerDown={(event) => {
+              if (event.pointerType === "touch") return;
+              pinnedRailPointerXRef.current = event.clientX;
+            }}
+            onPointerMove={(event) => {
+              if (
+                event.pointerType === "touch" ||
+                pinnedRailPointerXRef.current == null
+              ) {
+                return;
+              }
+              maybeRubberbandPinnedRail(
+                event.currentTarget,
+                pinnedRailPointerXRef.current - event.clientX,
+              );
+            }}
+            onPointerUp={() => {
+              pinnedRailPointerXRef.current = null;
+            }}
+            onPointerLeave={() => {
+              pinnedRailPointerXRef.current = null;
+            }}
+            onPointerCancel={() => {
+              pinnedRailPointerXRef.current = null;
+            }}
+            onTouchStart={(event) => {
+              pinnedRailTouchXRef.current = event.touches[0]?.clientX ?? null;
+            }}
+            onTouchMove={(event) => {
+              const x = event.touches[0]?.clientX;
+              if (x == null || pinnedRailTouchXRef.current == null) return;
+              maybeRubberbandPinnedRail(
+                event.currentTarget,
+                pinnedRailTouchXRef.current - x,
+              );
+            }}
+            onTouchEnd={() => {
+              pinnedRailTouchXRef.current = null;
+            }}
+            onTouchCancel={() => {
+              pinnedRailTouchXRef.current = null;
+            }}
+            onWheel={(event) => {
+              if (Math.abs(event.deltaX) <= Math.abs(event.deltaY)) return;
+              maybeRubberbandPinnedRail(event.currentTarget, event.deltaX);
+            }}
+          >
+            {Array.from({ length: mobilePinnedPageCount }, (_, pageIndex) => (
+              <div
+                key={`pinned-page-${pageIndex}`}
+                className="hermes-mobile-pinned-page"
+              >
+                {mobilePinnedSessions
+                  .slice(pageIndex * 2, pageIndex * 2 + 2)
+                  .map((s) => (
+                    <MobilePinnedSessionCard
+                      key={`pinned-${s.id}`}
+                      session={s}
+                      isOpening={openingSessionId === s.id}
+                      onOpen={() => openMobilePreview(s.id)}
+                      onMenuOpen={() => setPinnedMenuId(s.id)}
+                      resumeInChatEnabled={resumeInChatEnabled}
+                    />
+                  ))}
+              </div>
+            ))}
+          </div>
+          <div
+            className="hermes-mobile-pinned-dots"
+            aria-label={`Pinned page ${displayedActivePinnedPage + 1} of ${mobilePinnedPageCount}`}
+          >
+            {Array.from({ length: mobilePinnedPageCount }, (_, index) => (
+              <span
+                key={`pinned-dot-${index}`}
+                aria-hidden="true"
+                data-active={index === displayedActivePinnedPage ? "true" : undefined}
               />
             ))}
           </div>
@@ -1885,7 +3201,7 @@ export default function SessionsPage() {
                 outlined
                 destructive
                 size="sm"
-                className="shrink-0"
+                className="hidden shrink-0 sm:inline-flex"
                 onClick={() => setDeleteEmptyOpen(true)}
                 aria-label={t.sessions.deleteEmpty}
                 title={t.sessions.deleteEmpty}
@@ -1977,7 +3293,7 @@ export default function SessionsPage() {
 
       {showList ? (
         filtered.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
+          <div className="hermes-mobile-sessions-empty flex flex-col items-center justify-center py-16 text-muted-foreground">
             <Clock className="h-8 w-8 mb-3 opacity-40" />
             <p className="text-sm font-medium">
               {search ? t.sessions.noMatch : t.sessions.noSessions}
@@ -1998,6 +3314,7 @@ export default function SessionsPage() {
               <span className="tabular-nums">{visibleSessions.length}</span>
             </div>
             <div
+              ref={sessionHistoryRef}
               className="hermes-ios-session-list grid min-w-0 grid-cols-2 gap-1.5 overflow-y-auto pr-0.5 sm:flex sm:flex-col sm:gap-1.5 sm:overflow-visible sm:rounded-none sm:border-0 sm:pr-0"
               aria-label="Session history"
               data-scrolled={sessionListScrolled ? "true" : "false"}
@@ -2005,16 +3322,12 @@ export default function SessionsPage() {
               role="region"
               tabIndex={0}
               onScroll={(event) => {
-                const scrolled = event.currentTarget.scrollTop > 2;
-                setSessionListScrolled((current) =>
-                  current === scrolled ? current : scrolled,
-                );
+                syncSessionListScrolled(event.currentTarget);
               }}
               onTouchStart={(event) => {
                 sessionListTouchYRef.current = event.touches[0]?.clientY ?? null;
               }}
               onTouchMove={(event) => {
-                setSessionListScrolled(true);
                 const y = event.touches[0]?.clientY;
                 if (y == null || sessionListTouchYRef.current == null) return;
                 maybeRubberbandSessionList(
@@ -2023,37 +3336,78 @@ export default function SessionsPage() {
                 );
               }}
               onTouchEnd={() => {
+                if (sessionHistoryRef.current) {
+                  syncSessionListScrolled(sessionHistoryRef.current);
+                }
                 sessionListTouchYRef.current = null;
               }}
               onWheel={(event) => {
-                setSessionListScrolled(true);
+                syncSessionListScrolled(event.currentTarget);
                 maybeRubberbandSessionList(
                   event.currentTarget,
                   event.deltaY,
                 );
               }}
             >
-              {visibleSessions.map((s, index) => (
-                <SessionRow
-                  key={s.id}
-                  session={s}
-                  snippet={snippetMap.get(s.id)}
-                  searchQuery={search || undefined}
-                  isExpanded={expandedId === s.id}
-                  isSelected={selectedIds.has(s.id)}
-                  onToggle={() =>
-                    setExpandedId((prev) => (prev === s.id ? null : s.id))
-                  }
-                  onSelectClick={(event) =>
-                    handleSelectClick(event, index, visibleSessions)
-                  }
-                  onDelete={() => sessionDelete.requestDelete(s.id)}
-                  onRename={handleRename}
-                  onExport={handleExport}
-                  openInChatOnRow={isMobile}
-                  resumeInChatEnabled={resumeInChatEnabled}
-                />
-              ))}
+              {isMobile && (
+                <div
+                  className="hermes-mobile-pull-indicator"
+                  aria-hidden="true"
+                >
+                  <span>Updated</span>
+                </div>
+              )}
+              {(isMobile ? mobileGroups : [{ id: "older", label: "History", sessions: visibleSessions }]).map(
+                (group) => (
+                  <section
+                    key={group.id}
+                    className="hermes-mobile-session-group contents sm:contents"
+                  >
+                    {isMobile && (
+                      <div className="hermes-mobile-session-group-label">
+                        <span>{group.label}</span>
+                        <span>{group.sessions.length}</span>
+                      </div>
+                    )}
+                    {group.sessions.map((s) => {
+                      const index = visibleSessions.findIndex(
+                        (session) => session.id === s.id,
+                      );
+                      return (
+                        <SessionRow
+                          key={s.id}
+                          session={s}
+                          snippet={snippetMap.get(s.id)}
+                          searchQuery={search || undefined}
+                          isExpanded={expandedId === s.id}
+                          isSelected={selectedIds.has(s.id)}
+                          isPinned={desktopPinnedSessionIds.includes(
+                            sessionPinId(s),
+                          )}
+                          isMobile={isMobile}
+                          isOpening={openingSessionId === s.id}
+                          onToggle={() =>
+                            setExpandedId((prev) =>
+                              prev === s.id ? null : s.id,
+                            )
+                          }
+                          onOpenInChat={openMobilePreview}
+                          onSelectClick={(event) =>
+                            handleSelectClick(event, index, visibleSessions)
+                          }
+                          onPin={() => handlePinSession(s)}
+                          onArchive={() => void handleArchiveSession(s)}
+                          onDelete={() => sessionDelete.requestDelete(s.id)}
+                          onRename={handleRename}
+                          onExport={handleExport}
+                          openInChatOnRow={isMobile}
+                          resumeInChatEnabled={resumeInChatEnabled}
+                        />
+                      );
+                    })}
+                  </section>
+                ),
+              )}
             </div>
 
             {showPagination && (
@@ -2124,24 +3478,61 @@ export default function SessionsPage() {
         </div>
       )}
 
-      <PluginSlot name="sessions:bottom" />
+      {!forceMobileSurface && <PluginSlot name="sessions:bottom" />}
       </div>
       {showList && (
         <SessionsMobileSearch
           search={search}
           searching={searching}
+          onFocusChange={setSearchFocused}
           onSearchChange={updateSearch}
         />
       )}
+      <MobilePinnedActionSheet
+        session={activePinnedActionSession}
+        onClose={() => setPinnedMenuId(null)}
+        onUnpin={() => {
+          if (!activePinnedActionSession) return;
+          handleUnpinSession(activePinnedActionSession);
+        }}
+        onRename={() => {
+          if (!activePinnedActionSession) return;
+          const session = activePinnedActionSession;
+          setPinnedMenuId(null);
+          const title = window.prompt(
+            "Rename session",
+            session.title && session.title !== "Untitled" ? session.title : "",
+          );
+          if (title !== null) void handleRename(session.id, title);
+        }}
+        onArchive={() => {
+          if (!activePinnedActionSession) return;
+          const session = activePinnedActionSession;
+          setPinnedMenuId(null);
+          void handleArchiveSession(session);
+        }}
+        onDelete={() => {
+          if (!activePinnedActionSession) return;
+          const session = activePinnedActionSession;
+          setPinnedMenuId(null);
+          sessionDelete.requestDelete(session.id);
+        }}
+      />
     </div>
   );
 }
 
 interface SessionRowProps {
   isExpanded: boolean;
+  isMobile: boolean;
+  isOpening: boolean;
+  isPinned: boolean;
   isSelected: boolean;
+  onArchive: () => void;
   onDelete: () => void;
   onExport: (id: string) => void;
+  onOpenInChat: (id: string) => void;
+  onPin: () => void;
   onRename: (id: string, title: string) => Promise<void>;
   openInChatOnRow: boolean;
   onSelectClick: (event: React.MouseEvent) => void;
@@ -2161,12 +3552,24 @@ interface SessionsPaginationProps {
 }
 
 interface MobilePinnedSessionCardProps {
+  isOpening: boolean;
+  onMenuOpen: () => void;
   onOpen: () => void;
   resumeInChatEnabled: boolean;
   session: SessionInfo;
 }
 
+interface MobilePinnedActionSheetProps {
+  onArchive: () => void;
+  onClose: () => void;
+  onDelete: () => void;
+  onRename: () => void;
+  onUnpin: () => void;
+  session: SessionInfo | null;
+}
+
 interface SessionsMobileSearchProps {
+  onFocusChange: (focused: boolean) => void;
   onSearchChange: (value: string) => void;
   search: string;
   searching: boolean;

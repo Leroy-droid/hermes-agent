@@ -12,10 +12,13 @@ import {
   HelpCircle,
   Hourglass,
   KeyRound,
+  List,
   Loader2,
   Lock,
   Mic,
+  MoreHorizontal,
   Plus,
+  Settings,
   ShieldCheck,
   TerminalSquare,
   X,
@@ -30,8 +33,15 @@ import {
   useState,
   type FormEvent,
 } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { Markdown } from "@/components/Markdown";
+import {
+  applyGatewayEventToActivities,
+  emptyActivityModel,
+  getVisibleActivityCards,
+  type AgentActivity,
+} from "@/lib/agentActivity";
 import { api, type ModelAssignmentResponse, type ModelOptionProvider, type ModelOptionsResponse } from "@/lib/api";
 import { GatewayClient, type ConnectionState, type GatewayEvent } from "@/lib/gatewayClient";
 import { cn } from "@/lib/utils";
@@ -44,7 +54,7 @@ interface MobileChatSurfaceProps {
   resume?: string | null;
 }
 
-type ChatRole = "assistant" | "system" | "tool" | "user";
+type ChatRole = "assistant" | "handoff" | "system" | "tool" | "user";
 
 interface ChatMessage {
   id: string;
@@ -58,17 +68,6 @@ interface UsagePayload {
   context_percent?: number;
   context_used?: number;
   total?: number;
-}
-
-interface CompressionResult {
-  after_messages?: number;
-  after_tokens?: number;
-  before_messages?: number;
-  before_tokens?: number;
-  messages?: SessionPayload["messages"];
-  removed?: number;
-  status?: string;
-  summary?: string;
 }
 
 interface SessionPayload {
@@ -87,6 +86,14 @@ interface SessionPayload {
   running?: boolean;
 }
 
+interface HandoffCreateResult extends SessionPayload {
+  handoff?: {
+    summary?: string;
+    source_message_count?: number;
+  };
+  source_session_id?: string;
+}
+
 interface TextPayload {
   text?: string;
   rendered?: string;
@@ -95,18 +102,6 @@ interface TextPayload {
   warning?: string;
 }
 
-interface ToolPayload {
-  tool_id?: string;
-  name?: string;
-  context?: string;
-  status?: string;
-  summary?: string;
-}
-
-interface StatusPayload {
-  kind?: string;
-  text?: string;
-}
 
 interface ClarifyPayload {
   choices?: string[] | null;
@@ -157,7 +152,6 @@ type NeedsInput =
 
 type ApprovalChoice = "always" | "deny" | "once" | "session";
 
-const ACTIVITY_LIMIT = 5;
 const REASONING_EFFORTS = [
   { caption: "Minimal", label: "Fast", value: "minimal" },
   { caption: "", label: "Low", value: "low" },
@@ -200,6 +194,13 @@ interface AttachmentResult {
   text?: string;
 }
 
+interface ComposerAttachment {
+  id: string;
+  kind: "file" | "image" | "pdf";
+  name: string;
+  text: string;
+}
+
 type ModelPickerName = "family" | "provider" | "version";
 
 interface ModelPickerOption {
@@ -219,20 +220,19 @@ function messageText(row: { text?: string; content?: string; name?: string; cont
 function normalizeMessages(rows: SessionPayload["messages"]): ChatMessage[] {
   if (!Array.isArray(rows)) return [];
 
-  return rows
-    .map((row, index) => {
-      const role = row.role === "user" || row.role === "assistant" || row.role === "tool"
+  return rows.flatMap((row, index) => {
+      const role: ChatRole = row.role === "user" || row.role === "assistant" || row.role === "tool"
         ? row.role
         : "system";
       const text = messageText(row).trim();
-      if (!text) return null;
-      return {
+      if (!text) return [];
+      const message: ChatMessage = {
         id: `history-${index}-${role}`,
         role,
         text,
-      } satisfies ChatMessage;
-    })
-    .filter((row): row is ChatMessage => row !== null);
+      };
+      return [message];
+    });
 }
 
 function newId(prefix: string): string {
@@ -255,15 +255,112 @@ function TypingIndicator({ label = "Hermes is working" }: { label?: string }) {
         <span className="hermes-typing-dot [animation-delay:140ms]" />
         <span className="hermes-typing-dot [animation-delay:280ms]" />
       </span>
-      <span className="text-xs text-text-secondary">{label}</span>
+      {label ? <span className="text-xs text-text-secondary">{label}</span> : null}
     </div>
   );
 }
 
-function mobileModelName(model?: string): string {
-  const cleanModel = (model || "model").split("/").pop() || "model";
-  const match = cleanModel.match(/^(gpt)[-_]?(.+)$/i);
-  return match ? `${match[1].toLowerCase()}-${match[2]}` : cleanModel;
+function activityIcon(card: AgentActivity) {
+  if (card.state === "complete") return <Check className="h-3.5 w-3.5" />;
+  if (card.state === "failed" || card.kind === "error") return <AlertCircle className="h-3.5 w-3.5" />;
+  if (card.kind === "decision") return <Lock className="h-3.5 w-3.5" />;
+  if (card.kind === "tool") return <Wrench className="h-3.5 w-3.5" />;
+  if (card.kind === "subagent") return <Bot className="h-3.5 w-3.5" />;
+  return <Loader2 className="h-3.5 w-3.5 animate-spin" />;
+}
+
+function activityStateLabel(state: AgentActivity["state"]): string {
+  if (state === "blocked") return "Needs you";
+  if (state === "complete") return "Done";
+  if (state === "failed") return "Issue";
+  if (state === "interrupted") return "Stopped";
+  if (state === "pending") return "Queued";
+  return "Working";
+}
+
+function MobileAgentActivityCard({ cards }: { cards: AgentActivity[] }) {
+  const [expanded, setExpanded] = useState(false);
+  const [technicalOpen, setTechnicalOpen] = useState(false);
+  const primary = [...cards].reverse().find((card) => card.state === "running" || card.state === "blocked") ?? cards[cards.length - 1];
+  if (!primary) {
+    return (
+      <div className="hermes-mobile-typing-inline">
+        <TypingIndicator label="" />
+      </div>
+    );
+  }
+
+  const rows = [
+    primary,
+    ...cards
+      .filter((card) => card.id !== primary.id)
+      .slice(-5)
+      .reverse(),
+  ];
+
+  return (
+    <div className="hermes-mobile-typing-inline">
+      <button
+        type="button"
+        onClick={() => setExpanded((open) => !open)}
+        className="hermes-ios-tap -mx-1 flex min-h-8 w-[calc(100%+0.5rem)] items-center justify-between gap-3 rounded-full px-1 text-left"
+        aria-expanded={expanded}
+        aria-label={expanded ? "Hide activity details" : "Show activity details"}
+      >
+        <TypingIndicator label="" />
+        <ChevronDown className={cn("h-4 w-4 shrink-0 text-text-secondary transition-transform", expanded && "rotate-180")} />
+      </button>
+
+      {expanded && (
+        <div className="hermes-mobile-agent-details mt-3 space-y-2 border-t border-midground/10 pt-3">
+          {rows.map((row) => (
+            <div key={row.id} className="flex gap-2.5 text-left">
+              <span
+                className={cn(
+                  "mt-0.5 grid h-6 w-6 shrink-0 place-items-center rounded-full border",
+                  row.state === "complete"
+                    ? "border-emerald-300/25 bg-emerald-300/10 text-emerald-100"
+                    : row.state === "blocked"
+                      ? "border-warning/30 bg-warning/12 text-warning"
+                      : row.state === "failed"
+                        ? "border-destructive/30 bg-destructive/12 text-destructive"
+                        : "border-midground/15 bg-midground/[0.055] text-text-secondary",
+                )}
+              >
+                {activityIcon(row)}
+              </span>
+              <span className="min-w-0 flex-1">
+                <span className="flex min-w-0 items-center gap-2">
+                  <span className="truncate text-xs font-medium leading-5 text-midground">{row.title}</span>
+                  <span className="shrink-0 text-[0.62rem] leading-5 text-text-secondary">
+                    {activityStateLabel(row.state)}
+                  </span>
+                </span>
+                {row.summary && (
+                  <span className="block text-[0.72rem] leading-5 text-text-secondary">{row.summary}</span>
+                )}
+              </span>
+            </div>
+          ))}
+          <button
+            type="button"
+            onClick={() => setTechnicalOpen((open) => !open)}
+            className="hermes-ios-tap mt-1 min-h-9 rounded-full px-1 text-[0.72rem] font-medium text-text-secondary hover:text-midground"
+          >
+            {technicalOpen ? "Hide technical details" : "Show technical details"}
+          </button>
+          {technicalOpen && (
+            <div className="rounded-[0.85rem] border border-midground/10 bg-midground/[0.035] px-3 py-2 font-mono-ui text-[0.68rem] leading-5 text-text-secondary">
+              <div>event: {primary.rawType}</div>
+              <div>state: {primary.state}</div>
+              {primary.metrics?.durationMs ? <div>duration: {Math.round(primary.metrics.durationMs / 100) / 10}s</div> : null}
+              {primary.detail ? <div className="mt-1 whitespace-pre-wrap break-words">{primary.detail}</div> : null}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 function normalizeEffort(value?: string): ReasoningEffort {
@@ -271,66 +368,6 @@ function normalizeEffort(value?: string): ReasoningEffort {
   if (clean === "fast" || clean === "min") return "minimal";
   if (clean === "max" || clean === "very_high" || clean === "x_high") return "xhigh";
   return REASONING_EFFORTS.some((option) => option.value === clean) ? (clean as ReasoningEffort) : "high";
-}
-
-function effortOptionLabel(value?: string): string {
-  const effort = normalizeEffort(value);
-  return REASONING_EFFORTS.find((option) => option.value === effort)?.label ?? effort;
-}
-
-function compactEffortLabel(value?: string): string {
-  return effortOptionLabel(value).toLowerCase();
-}
-
-function effortMeterValue(value?: string): number {
-  const effort = normalizeEffort(value);
-  if (effort === "minimal" || effort === "low") return 1;
-  if (effort === "medium") return 2;
-  if (effort === "high") return 3;
-  return 4;
-}
-
-function OpenAIModelGlyph({ className }: { className?: string }) {
-  return (
-    <svg
-      aria-hidden="true"
-      className={className}
-      fill="none"
-      viewBox="0 0 24 24"
-    >
-      <path
-        d="M12 3.4c1.16 0 2.2.58 2.83 1.47a4.07 4.07 0 0 1 4.09 6.08 4.07 4.07 0 0 1-3.31 6.3 4.06 4.06 0 0 1-6.44 1.88 4.07 4.07 0 0 1-4.09-6.08 4.07 4.07 0 0 1 3.31-6.3A4.06 4.06 0 0 1 12 3.4Z"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.45"
-      />
-      <path
-        d="m9.15 18.85 5.7-3.28V9.04m-5.7 0 5.7 3.28 3.55-2.06M5.6 13.74l3.55-2.06 5.7 3.29m0-9.84v4.11L9.15 12.5m9.25-2.24v4.11l-3.55 2.06"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        strokeWidth="1.45"
-      />
-    </svg>
-  );
-}
-
-function EffortMeter({ value }: { value?: string }) {
-  const active = effortMeterValue(value);
-  return (
-    <span aria-hidden="true" className="absolute bottom-1 left-1/2 flex -translate-x-1/2 gap-[0.1rem]">
-      {[1, 2, 3, 4].map((level) => (
-        <span
-          key={level}
-          className={cn(
-            "h-[0.18rem] w-[0.18rem] rounded-full transition-colors",
-            level <= active ? "bg-sky-50 shadow-[0_0_6px_rgba(255,255,255,0.65)]" : "bg-sky-50/24",
-          )}
-        />
-      ))}
-    </span>
-  );
 }
 
 function splitModelParts(model?: string): ModelParts {
@@ -387,6 +424,16 @@ function appendDraftLine(current: string, addition: string): string {
   return base ? `${base}\n${clean}` : clean;
 }
 
+function removeDraftAttachmentLine(draft: string, attachmentText: string): string {
+  const target = attachmentText.trim();
+  return draft
+    .split("\n")
+    .filter((line) => line.trim() !== target)
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trimStart();
+}
+
 function clampPercent(value: number): number {
   return Math.max(0, Math.min(100, Math.round(value)));
 }
@@ -413,48 +460,6 @@ function contextFillPercent(info: NonNullable<SessionPayload["info"]>, messages:
   const max = Number(usage?.context_max ?? defaultContextWindow(info.model));
   if (!Number.isFinite(used) || !Number.isFinite(max) || max <= 0) return null;
   return clampPercent((used / max) * 100);
-}
-
-function handoffMessageText(row: NonNullable<CompressionResult["messages"]>[number]): string {
-  return messageText(row).replace(/\s+/g, " ").trim();
-}
-
-function buildHandoffPrompt(result: CompressionResult, fallbackMessages: ChatMessage[], previousSessionId: string): string {
-  const compressedMessages = Array.isArray(result.messages) ? result.messages : [];
-  const recentCompressedContext = compressedMessages
-    .slice(-8)
-    .map((row) => {
-      const role = (row.role || "message").toUpperCase();
-      const text = handoffMessageText(row);
-      return text ? `- ${role}: ${text.slice(0, 900)}` : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-  const visibleContext = fallbackMessages
-    .slice(-8)
-    .map((message) => {
-      const text = message.text.replace(/\s+/g, " ").trim();
-      return text ? `- ${message.role.toUpperCase()}: ${text.slice(0, 900)}` : "";
-    })
-    .filter(Boolean)
-    .join("\n");
-  const context = recentCompressedContext || visibleContext || "- No visible transcript content was available.";
-  const summary = (result.summary || "").trim() || "The previous session was compressed for a mobile handoff.";
-
-  return [
-    "Continue from this Hermes mobile handoff.",
-    "",
-    `Previous session: ${previousSessionId}`,
-    `Compression: ${result.before_messages ?? "?"} messages -> ${result.after_messages ?? "?"} messages, ${result.before_tokens ?? "?"} tokens -> ${result.after_tokens ?? "?"} tokens.`,
-    "",
-    "## Handoff summary",
-    summary,
-    "",
-    "## Recent compressed context",
-    context,
-    "",
-    "Please use this as the starting context for this new session, preserve the active goals and decisions, and then continue from here.",
-  ].join("\n");
 }
 
 function isTailscaleIp(hostname: string): boolean {
@@ -1558,6 +1563,7 @@ export function MobileChatSurface({
   profile = "",
   resume = null,
 }: MobileChatSurfaceProps) {
+  const navigate = useNavigate();
   const [version, setVersion] = useState(0);
   const [forceNewForResume, setForceNewForResume] = useState<string | null>(null);
   // Version intentionally rebuilds the WebSocket client for the in-place "new chat"
@@ -1568,9 +1574,10 @@ export function MobileChatSurface({
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [draft, setDraft] = useState("");
+  const [composerAttachments, setComposerAttachments] = useState<ComposerAttachment[]>([]);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [activity, setActivity] = useState<string[]>([]);
+  const [activityModel, setActivityModel] = useState(() => emptyActivityModel());
   const [info, setInfo] = useState<NonNullable<SessionPayload["info"]>>({});
   const [needsInput, setNeedsInput] = useState<NeedsInput | null>(null);
   const [inputDraft, setInputDraft] = useState("");
@@ -1590,14 +1597,28 @@ export function MobileChatSurface({
   );
   const decisionPanelOpen = decisionPanelRequested;
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const composerRef = useRef<HTMLFormElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const sessionIdRef = useRef<string | null>(null);
   const lastNotificationRef = useRef<string | null>(null);
-  const pendingHandoffSubmitRef = useRef<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [composerHeight, setComposerHeight] = useState(86);
+  const [keyboardInset, setKeyboardInset] = useState(0);
   const hasVisibleTypingBubble = messages.some(
     (message) => message.role === "assistant" && Boolean(message.streaming),
   );
+  const visibleActivityCards = useMemo(() => getVisibleActivityCards(activityModel), [activityModel]);
+  const shieldDisconnected = connection === "closed" || connection === "error";
+  const shieldStatusClass = shieldDisconnected
+    ? "text-destructive"
+    : connection !== "open" || error
+      ? "text-warning"
+      : "text-emerald-300";
+  const shieldStatusLabel = shieldDisconnected
+    ? "Security status: disconnected"
+    : connection !== "open" || error
+      ? "Security status: attention needed"
+      : "Security status: private and connected";
 
   useEffect(() => {
     sessionIdRef.current = sessionId;
@@ -1610,7 +1631,11 @@ export function MobileChatSurface({
   const pushActivity = useCallback((text: string) => {
     const clean = text.trim();
     if (!clean) return;
-    setActivity((prev) => [clean, ...prev.filter((item) => item !== clean)].slice(0, ACTIVITY_LIMIT));
+    setActivityModel((prev) => applyGatewayEventToActivities(prev, {
+      payload: { kind: "status", text: clean },
+      session_id: sessionIdRef.current ?? undefined,
+      type: "status.update",
+    }));
   }, []);
 
   const requestNotifications = useCallback(async () => {
@@ -1623,6 +1648,11 @@ export function MobileChatSurface({
     setNotificationPermission(next);
     pushActivity(next === "granted" ? "alerts enabled" : "alerts not enabled");
   }, [pushActivity]);
+
+  const navigateFromMenu = useCallback((path: string) => {
+    setSessionMenuOpen(false);
+    navigate(path);
+  }, [navigate]);
 
   useEffect(() => {
     if (!needsInput) return;
@@ -1714,20 +1744,8 @@ export function MobileChatSurface({
       if (ev.payload?.usage) setInfo((prev) => ({ ...prev, usage: ev.payload?.usage }));
       if (ev.payload?.warning) pushActivity(ev.payload.warning);
     });
-    const offStatus = gateway.on<StatusPayload>("status.update", (ev) => {
-      pushActivity(ev.payload?.text ?? "");
-    });
-    const offToolStart = gateway.on<ToolPayload>("tool.start", (ev) => {
-      const p = ev.payload;
-      pushActivity(`${p?.name ?? "tool"}${p?.context ? `: ${p.context}` : ""}`);
-    });
-    const offToolProgress = gateway.on<ToolPayload>("tool.progress", (ev) => {
-      if (ev.payload?.summary) pushActivity(ev.payload.summary);
-    });
-    const offToolComplete = gateway.on<ToolPayload>("tool.complete", (ev) => {
-      if (ev.payload?.status && ev.payload.status !== "ok") {
-        pushActivity(`${ev.payload.name ?? "tool"} ${ev.payload.status}`);
-      }
+    const offActivity = gateway.onAny((ev) => {
+      setActivityModel((prev) => applyGatewayEventToActivities(prev, ev));
     });
     const offClarify = gateway.on<ClarifyPayload>("clarify.request", (ev) => {
       const requestId = ev.payload?.request_id;
@@ -1802,33 +1820,6 @@ export function MobileChatSurface({
         setInfo(result.info ?? {});
         setRunning(Boolean(result.running));
         setError(null);
-        const pendingHandoff = pendingHandoffSubmitRef.current;
-        if (pendingHandoff && result.session_id) {
-          pendingHandoffSubmitRef.current = null;
-          setDraft("");
-          setRunning(true);
-          setMessages((prev) => [
-            ...prev,
-            { id: newId("user"), role: "user", text: pendingHandoff },
-          ]);
-          ensureAssistantStreaming();
-          try {
-            await gateway.request("prompt.submit", {
-              session_id: result.session_id,
-              text: pendingHandoff,
-            });
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            setError(message);
-            setRunning(false);
-            setMessages((prev) => [
-              ...prev,
-              { id: newId("system"), role: "system", text: message },
-            ]);
-          } finally {
-            setHandoffBusy(false);
-          }
-        }
       })
       .catch((err: Error) => {
         if (!cancelled) {
@@ -1844,10 +1835,7 @@ export function MobileChatSurface({
       offStart();
       offDelta();
       offComplete();
-      offStatus();
-      offToolStart();
-      offToolProgress();
-      offToolComplete();
+      offActivity();
       offClarify();
       offApproval();
       offSudo();
@@ -1861,7 +1849,7 @@ export function MobileChatSurface({
     const node = scrollRef.current;
     if (!node) return;
     node.scrollTo({ top: node.scrollHeight, behavior: "smooth" });
-  }, [messages, activity]);
+  }, [messages, activityModel.cards.length]);
 
   useEffect(() => {
     const textarea = textareaRef.current;
@@ -1869,6 +1857,41 @@ export function MobileChatSurface({
     textarea.style.height = "0px";
     textarea.style.height = `${Math.min(160, Math.max(48, textarea.scrollHeight))}px`;
   }, [draft]);
+
+  useEffect(() => {
+    const composer = composerRef.current;
+    if (!composer) return;
+
+    const updateComposerHeight = () => {
+      const next = Math.ceil(composer.getBoundingClientRect().height);
+      setComposerHeight((current) => (Math.abs(current - next) < 1 ? current : next));
+    };
+
+    updateComposerHeight();
+    const observer = new ResizeObserver(updateComposerHeight);
+    observer.observe(composer);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!active || typeof window === "undefined" || !window.visualViewport) {
+      return;
+    }
+
+    const viewport = window.visualViewport;
+    const updateKeyboardInset = () => {
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+      setKeyboardInset((current) => (Math.abs(current - inset) < 1 ? current : Math.round(inset)));
+    };
+
+    updateKeyboardInset();
+    viewport.addEventListener("resize", updateKeyboardInset);
+    viewport.addEventListener("scroll", updateKeyboardInset);
+    return () => {
+      viewport.removeEventListener("resize", updateKeyboardInset);
+      viewport.removeEventListener("scroll", updateKeyboardInset);
+    };
+  }, [active]);
 
   const clearNeedsInput = useCallback(() => {
     setNeedsInput(null);
@@ -1943,6 +1966,7 @@ export function MobileChatSurface({
 
     navigator.vibrate?.(8);
     setDraft("");
+    setComposerAttachments([]);
     setError(null);
     setMessages((prev) => [
       ...prev,
@@ -1999,24 +2023,29 @@ export function MobileChatSurface({
     setError(null);
     try {
       const additions: string[] = [];
+      const chips: ComposerAttachment[] = [];
       for (const file of files) {
         const dataUrl = await readFileAsDataUrl(file);
         const filename = file.name || "upload";
         let result: AttachmentResult;
+        let kind: ComposerAttachment["kind"] = "file";
+        let text: string;
         if (file.type.startsWith("image/")) {
+          kind = "image";
           result = await gateway.request<AttachmentResult>("image.attach_bytes", {
             content_base64: dataUrl,
             filename,
             session_id: sessionId,
           });
-          additions.push(result.text || `[User attached image: ${filename}]`);
+          text = result.text || `[User attached image: ${filename}]`;
         } else if (file.type === "application/pdf" || filename.toLowerCase().endsWith(".pdf")) {
+          kind = "pdf";
           result = await gateway.request<AttachmentResult>("pdf.attach", {
             content_base64: dataUrl,
             filename,
             session_id: sessionId,
           }, 180_000);
-          additions.push(result.text || `[User attached PDF: ${filename}]`);
+          text = result.text || `[User attached PDF: ${filename}]`;
         } else {
           result = await gateway.request<AttachmentResult>("file.attach", {
             data_url: dataUrl,
@@ -2024,10 +2053,18 @@ export function MobileChatSurface({
             path: filename,
             session_id: sessionId,
           });
-          additions.push(result.ref_text || `[User attached file: ${result.name || filename}]`);
+          text = result.ref_text || `[User attached file: ${result.name || filename}]`;
         }
+        additions.push(text);
+        chips.push({
+          id: newId("attachment"),
+          kind,
+          name: result.name || result.filename || filename,
+          text,
+        });
       }
       setDraft((prev) => additions.reduce((next, addition) => appendDraftLine(next, addition), prev));
+      setComposerAttachments((prev) => [...prev, ...chips]);
       pushActivity(`${files.length} file${files.length === 1 ? "" : "s"} attached`);
       navigator.vibrate?.(8);
     } catch (err) {
@@ -2038,21 +2075,48 @@ export function MobileChatSurface({
     }
   }, [gateway, pushActivity, sessionId]);
 
-  const startFresh = useCallback(() => {
+  const removeComposerAttachment = useCallback((attachmentId: string) => {
+    setComposerAttachments((prev) => {
+      const attachment = prev.find((item) => item.id === attachmentId);
+      if (!attachment) return prev;
+      setDraft((current) => removeDraftAttachmentLine(current, attachment.text));
+      return prev.filter((item) => item.id !== attachmentId);
+    });
+  }, []);
+
+  const startFresh = useCallback(async () => {
+    if (running) {
+      const confirmed = window.confirm("Stop the current response and start a fresh chat?");
+      if (!confirmed) return;
+    }
+
     navigator.vibrate?.(6);
-    pendingHandoffSubmitRef.current = null;
+    const previousSessionId = sessionId;
     setSessionMenuOpen(false);
     setHandoffBusy(false);
+    setError(null);
+
+    if (previousSessionId) {
+      try {
+        if (running) {
+          await gateway.request("session.interrupt", { session_id: previousSessionId });
+        }
+        await gateway.request("session.close", { session_id: previousSessionId });
+      } catch (err) {
+        pushActivity(err instanceof Error ? `fresh chat cleanup issue: ${err.message}` : "fresh chat cleanup issue");
+      }
+    }
+
     setForceNewForResume(resume ?? "__new__");
     setVersion((prev) => prev + 1);
     setMessages([]);
     setDraft("");
-    setActivity([]);
-    setError(null);
+    setComposerAttachments([]);
+    setActivityModel(emptyActivityModel());
     setRunning(false);
     setSessionId(null);
     clearNeedsInput();
-  }, [clearNeedsInput, resume]);
+  }, [clearNeedsInput, gateway, pushActivity, resume, running, sessionId]);
 
   const canPrepareHandoff = connection === "open" && Boolean(sessionId) && !running && messages.length > 0 && !needsInput && !handoffBusy;
 
@@ -2065,29 +2129,42 @@ export function MobileChatSurface({
     pushActivity("preparing handoff");
 
     try {
-      const result = await gateway.request<CompressionResult>(
-        "session.compress",
+      const result = await gateway.request<HandoffCreateResult>(
+        "session.handoff_create",
         {
+          cols: 88,
           focus_topic: "mobile continuation handoff to a new session",
+          ...(profile ? { profile } : {}),
           session_id: sessionId,
+          title: "Mobile handoff",
         },
-        120_000,
+        30_000,
       );
-      pendingHandoffSubmitRef.current = buildHandoffPrompt(result, messages, sessionId);
-      setForceNewForResume(resume ?? "__new__");
-      setVersion((prev) => prev + 1);
-      setMessages([]);
+      const handoffSummary = result.handoff?.source_message_count
+        ? `Carried over a clean summary from ${result.handoff.source_message_count} previous message${result.handoff.source_message_count === 1 ? "" : "s"}.`
+        : "Carried over a clean summary from the previous chat.";
+      setSessionId(result.session_id ?? null);
+      setMessages([
+        {
+          id: newId("handoff"),
+          role: "handoff",
+          text: handoffSummary,
+        },
+        ...normalizeMessages(result.messages),
+      ]);
+      setInfo(result.info ?? {});
       setDraft("");
-      setActivity([]);
-      setRunning(false);
-      setSessionId(null);
+      setComposerAttachments([]);
+      setActivityModel(emptyActivityModel());
+      setRunning(Boolean(result.running));
       clearNeedsInput();
+      pushActivity("handoff ready");
+      setHandoffBusy(false);
     } catch (err) {
-      pendingHandoffSubmitRef.current = null;
       setHandoffBusy(false);
       setError(err instanceof Error ? err.message : String(err));
     }
-  }, [clearNeedsInput, gateway, handoffBusy, messages, pushActivity, resume, running, sessionId]);
+  }, [clearNeedsInput, gateway, handoffBusy, profile, pushActivity, running, sessionId]);
 
   const applyModelSelection = useCallback(async ({
     confirmExpensiveModel = false,
@@ -2194,103 +2271,122 @@ export function MobileChatSurface({
     );
   }
 
+  const shellStyle: CSSProperties & {
+    "--hermes-mobile-composer-height": string;
+    "--hermes-mobile-keyboard-inset": string;
+  } = {
+    "--hermes-mobile-composer-height": `${composerHeight}px`,
+    "--hermes-mobile-keyboard-inset": `${keyboardInset}px`,
+  };
+
   return (
-    <section className="hermes-mobile-card hermes-ios-surface hermes-mythic-frame relative isolate flex min-h-0 flex-1 flex-col overflow-hidden rounded-[1.65rem]">
-      <span aria-hidden="true" className="hermes-mythic-art hermes-mythic-art--chat" />
-      <div className="shrink-0 border-b border-midground/10 bg-background-base/38 px-4 py-2.5 backdrop-blur-xl">
-        <div className="flex items-center justify-between gap-3">
-          <div className="min-w-0 flex items-center gap-2.5">
-            <Typography className="truncate text-[1.55rem] font-semibold leading-none text-midground">
-              Hermes
-            </Typography>
-            <button
-              type="button"
-              onClick={() => setSecurityOpen(true)}
-              onPointerDown={() => setSecurityOpen(true)}
-              aria-expanded={securityOpen}
-              className="hermes-ios-tap grid h-11 w-11 shrink-0 place-items-center rounded-full text-emerald-100"
-              title="Open security stats"
-              aria-label="Open security stats"
-            >
-              <span className="grid h-9 w-9 place-items-center rounded-full border border-emerald-300/35 bg-emerald-300/10 shadow-[0_0_18px_rgba(45,212,191,0.2)] transition-colors hover:bg-emerald-300/16">
-                <ShieldCheck className="h-4 w-4" />
-              </span>
-            </button>
-            <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-sky-300/35 bg-sky-300/10 text-sky-100 shadow-[0_0_18px_rgba(56,189,248,0.16)]" title="Voice ready" aria-label="Voice ready">
-              <Mic className="h-4 w-4" />
+    <section
+      className="hermes-mobile-chat-shell hermes-mobile-app relative isolate flex min-h-0 flex-1 flex-col overflow-hidden"
+      style={shellStyle}
+    >
+      <div className="hermes-mobile-chat-header hermes-mobile-app-header shrink-0 px-4">
+        <div className="grid h-14 grid-cols-[2.75rem_1fr_2.75rem] items-center gap-2">
+          <button
+            type="button"
+            aria-label="Back"
+            onClick={() => navigateFromMenu("/sessions?mobile=1")}
+            className="hermes-mobile-back-button hermes-ios-tap grid h-11 w-11 place-items-center rounded-full text-[1.85rem] leading-none"
+          >
+            ‹
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setSecurityOpen(true)}
+            aria-label={shieldStatusLabel}
+            title={shieldStatusLabel}
+            className="hermes-mobile-title-button hermes-ios-tap mx-auto inline-flex h-11 max-w-full items-center justify-center gap-2 rounded-full px-2"
+          >
+            <span className={cn("hermes-mobile-shield grid h-7 w-7 shrink-0 place-items-center rounded-lg text-white", shieldStatusClass)}>
+              <ShieldCheck className="h-4 w-4" />
             </span>
-            <button
-              type="button"
-              onClick={() => {
-                navigator.vibrate?.(4);
-                setModelSheetOpen(true);
-              }}
-              className="hermes-ios-tap grid h-11 w-11 shrink-0 place-items-center rounded-full text-sky-50"
-              aria-label={`Change model, ${mobileModelName(info.model)}, ${compactEffortLabel(info.reasoning_effort || "high")} effort`}
-              title={`${mobileModelName(info.model)} · ${compactEffortLabel(info.reasoning_effort || "high")}`}
-            >
-              <span className="relative grid h-9 w-9 place-items-center rounded-full border border-sky-300/35 bg-sky-300/10 shadow-[0_0_18px_rgba(56,189,248,0.16)] transition-colors hover:bg-sky-300/16">
-                <OpenAIModelGlyph className="h-4 w-4" />
-                <EffortMeter value={info.reasoning_effort || "high"} />
-              </span>
-            </button>
-          </div>
-          <div className="relative flex shrink-0 items-center gap-2">
+            <span className="truncate text-[1.05rem] font-semibold tracking-[-0.02em]">
+              Hermes Mobile
+            </span>
+          </button>
+
+          <div className="relative flex justify-end">
             <Button
               ghost
               size="icon"
-              title="Session options"
-              aria-label="Session options"
+              title="More options"
+              aria-label="More options"
               aria-expanded={sessionMenuOpen}
               onClick={() => {
                 navigator.vibrate?.(4);
                 setSessionMenuOpen((open) => !open);
               }}
-              className="hermes-ios-tap h-9 w-9 rounded-full border border-current/15 text-text-secondary hover:bg-midground/10 hover:text-midground"
+              className="hermes-mobile-menu-button hermes-ios-tap h-10 w-10 rounded-full border"
             >
-              {handoffBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Plus className="h-4 w-4" />}
+              {handoffBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <MoreHorizontal className="h-5 w-5" />}
             </Button>
             {sessionMenuOpen && (
-              <div className="hermes-session-menu hermes-ios-surface absolute right-0 top-[3.35rem] z-[70] w-[min(17rem,calc(100vw-2rem))] overflow-hidden rounded-[1.15rem] p-2.5 shadow-[0_18px_52px_rgba(0,0,0,0.46)]">
+              <div className="hermes-mobile-popover-menu hermes-session-menu absolute right-0 top-12 z-[70] w-[min(18.5rem,calc(100vw-2rem))] overflow-hidden rounded-[1.35rem] border p-1.5">
+                <span aria-hidden="true" className="hermes-mobile-popover-arrow" />
+                <div className="px-3 pb-1.5 pt-2 text-[0.78rem] font-semibold text-text-secondary">Start a new chat</div>
                 <button
                   type="button"
-                  onClick={startFresh}
-                  className="hermes-ios-tap flex min-h-12 w-full items-center gap-3 rounded-[0.95rem] px-3 py-2 text-left text-midground hover:bg-midground/10"
+                  onClick={() => void startFresh()}
+                  className="hermes-mobile-menu-row hermes-mobile-menu-row--primary hermes-ios-tap flex min-h-[3.25rem] w-full items-center gap-3 rounded-[0.9rem] px-3 py-2 text-left"
                 >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-current/12 bg-current/6">
+                  <span className="hermes-mobile-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-[0.65rem]">
                     <Plus className="h-4 w-4" />
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold leading-5">New session</span>
-                    <span className="block truncate text-[0.7rem] text-text-secondary">Start clean</span>
+                    <span className="block text-sm font-semibold leading-5">Fresh chat</span>
+                    <span className="block truncate text-[0.72rem] text-text-secondary">Start with no previous context.</span>
                   </span>
                 </button>
                 <button
                   type="button"
                   disabled={!canPrepareHandoff}
                   onClick={() => void handoffToFreshSession()}
-                  className="hermes-ios-tap mt-1 flex min-h-12 w-full items-center gap-3 rounded-[0.95rem] px-3 py-2 text-left text-midground hover:bg-midground/10 disabled:opacity-45"
+                  className="hermes-mobile-menu-row hermes-ios-tap flex min-h-[3.25rem] w-full items-center gap-3 rounded-[0.9rem] px-3 py-2 text-left disabled:opacity-45"
                 >
-                  <span className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-emerald-300/20 bg-emerald-300/10 text-emerald-100">
+                  <span className="hermes-mobile-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-[0.65rem]">
                     {handoffBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
                   </span>
                   <span className="min-w-0">
-                    <span className="block text-sm font-semibold leading-5">Compress + handoff</span>
-                    <span className="block truncate text-[0.7rem] text-text-secondary">Continue with context</span>
+                    <span className="block text-sm font-semibold leading-5">Handoff from this chat</span>
+                    <span className="block truncate text-[0.72rem] text-text-secondary">
+                      {canPrepareHandoff ? "Carry over a clean summary." : "Available after an idle chat."}
+                    </span>
                   </span>
+                </button>
+                <div className="hermes-mobile-menu-divider my-1 h-px" />
+                <button
+                  type="button"
+                  onClick={() => navigateFromMenu("/sessions?mobile=1")}
+                  className="hermes-mobile-menu-row hermes-ios-tap flex min-h-12 w-full items-center gap-3 rounded-[0.9rem] px-3 py-2 text-left"
+                >
+                  <span className="hermes-mobile-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-[0.65rem]">
+                    <List className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 text-sm font-semibold leading-5">Sessions</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSessionMenuOpen(false);
+                    setModelSheetOpen(true);
+                  }}
+                  className="hermes-mobile-menu-row hermes-ios-tap flex min-h-12 w-full items-center gap-3 rounded-[0.9rem] px-3 py-2 text-left"
+                >
+                  <span className="hermes-mobile-menu-icon grid h-8 w-8 shrink-0 place-items-center rounded-[0.65rem]">
+                    <Settings className="h-4 w-4" />
+                  </span>
+                  <span className="min-w-0 text-sm font-semibold leading-5">Settings</span>
                 </button>
               </div>
             )}
           </div>
         </div>
 
-        {profile && (
-          <div className="mt-2 flex min-w-0 gap-2 overflow-x-auto pb-0.5 text-[0.72rem] text-text-secondary scrollbar-none">
-            <span className="shrink-0 rounded-full border border-current/10 bg-current/5 px-2.5 py-1">
-              {profile}
-            </span>
-          </div>
-        )}
       </div>
 
       {securityOpen && <SecurityStatsSheet connection={connection} onClose={() => setSecurityOpen(false)} />}
@@ -2305,10 +2401,10 @@ export function MobileChatSurface({
         />
       )}
 
-      <div ref={scrollRef} className="hermes-mobile-scroll min-h-0 flex-1 overflow-y-auto px-3 py-4">
+      <div ref={scrollRef} className="hermes-mobile-chat-scroll hermes-mobile-app-chat hermes-mobile-scroll min-h-0 flex-1 overflow-y-auto px-4 py-4">
         {messages.length === 0 ? (
-          <div className="flex min-h-full flex-col justify-center gap-4 px-1 py-6">
-            <article className="hermes-mobile-card mr-auto max-w-[88%] rounded-[1.35rem] border border-midground/12 bg-background-base/55 px-4 py-3 text-sm text-midground shadow-[0_16px_40px_rgba(0,0,0,0.24)] backdrop-blur-xl">
+          <div className="flex min-h-full flex-col gap-4 px-1 py-2">
+            <article className="hermes-mobile-bubble hermes-mobile-bubble--assistant mr-auto max-w-[88%] rounded-[1.25rem] border px-4 py-3 text-sm">
               <div className="mb-2 flex items-center gap-2 text-[0.65rem] uppercase tracking-[0.14em] text-text-secondary">
                 <Bot className="h-3.5 w-3.5" />
                 Hermes
@@ -2318,7 +2414,7 @@ export function MobileChatSurface({
               </p>
               <div className="mt-2 text-[0.68rem] text-text-secondary">Secure private network established.</div>
             </article>
-            <article className="hermes-mobile-card ml-auto max-w-[88%] rounded-[1.35rem] border border-emerald-200/20 bg-emerald-300/16 px-4 py-3 text-sm text-emerald-50 shadow-[0_18px_44px_rgba(45,212,191,0.16)]">
+            <article className="hermes-mobile-bubble hermes-mobile-bubble--user ml-auto max-w-[88%] rounded-[1.25rem] border px-4 py-3 text-sm">
               <p className="leading-6">
                 Ask Hermes to organize files, check a session, or continue work on your Mac.
               </p>
@@ -2330,24 +2426,27 @@ export function MobileChatSurface({
               <article
                 key={message.id}
                 className={cn(
-                  "hermes-mobile-card max-w-[92%] rounded-[1.25rem] border px-3.5 py-3 text-sm shadow-sm",
+                  "hermes-mobile-bubble max-w-[92%] rounded-[1.1rem] border px-3.5 py-3 text-sm",
                   message.role === "user"
-                    ? "ml-auto border-emerald-200/22 bg-emerald-300/[0.105] text-emerald-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.08),0_0_28px_rgba(45,212,191,0.18),0_12px_34px_rgba(0,0,0,0.1)] backdrop-blur-md"
+                    ? "hermes-mobile-bubble--user ml-auto"
+                    : message.role === "handoff"
+                      ? "hermes-mobile-bubble--handoff mx-auto max-w-full"
                     : message.role === "assistant"
-                      ? "mr-auto border-midground/12 bg-background-base/55 text-foreground backdrop-blur-xl"
-                      : "mx-auto max-w-full border-warning/25 bg-warning/10 text-warning",
+                      ? "hermes-mobile-bubble--assistant mr-auto"
+                      : "hermes-mobile-bubble--system mx-auto max-w-full border-warning/25 bg-warning/10 text-warning",
                 )}
               >
                 {message.role !== "user" && (
                   <div className="mb-1.5 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-[0.14em] opacity-70">
                     {message.role === "assistant" ? <Bot className="h-3 w-3" /> : null}
+                    {message.role === "handoff" ? <FileText className="h-3 w-3" /> : null}
                     {message.role === "tool" ? <Wrench className="h-3 w-3" /> : null}
                     {message.role === "system" ? <AlertCircle className="h-3 w-3" /> : null}
-                    {message.role === "assistant" ? "Hermes" : message.role}
+                    {message.role === "assistant" ? "Hermes" : message.role === "handoff" ? "Handoff ready" : message.role}
                   </div>
                 )}
                 {message.role === "assistant" && message.streaming && message.text.trim().length === 0 ? (
-                  <TypingIndicator />
+                  <MobileAgentActivityCard cards={visibleActivityCards} />
                 ) : message.role === "assistant" ? (
                   <Markdown content={message.text} streaming={message.streaming} />
                 ) : (
@@ -2356,12 +2455,12 @@ export function MobileChatSurface({
               </article>
             ))}
             {running && !hasVisibleTypingBubble && (
-              <article className="hermes-mobile-card mr-auto max-w-[92%] rounded-[1.25rem] border border-midground/12 bg-background-base/55 px-3.5 py-3 text-sm text-foreground shadow-sm backdrop-blur-xl">
+              <article className="hermes-mobile-bubble hermes-mobile-bubble--assistant mr-auto max-w-[92%] rounded-[1.1rem] border px-3.5 py-3 text-sm">
                 <div className="mb-1.5 flex items-center gap-1.5 text-[0.65rem] uppercase tracking-[0.14em] opacity-70">
                   <Bot className="h-3 w-3" />
                   Hermes
                 </div>
-                <TypingIndicator />
+                <MobileAgentActivityCard cards={visibleActivityCards} />
               </article>
             )}
           </div>
@@ -2402,8 +2501,25 @@ export function MobileChatSurface({
         </div>
       )}
 
-      <form onSubmit={submit} className="shrink-0 border-t border-midground/10 bg-background-base/70 p-3 backdrop-blur-xl">
-        <div className="flex items-end gap-2 rounded-[1.45rem] border border-midground/15 bg-[color-mix(in_srgb,var(--midground-base)_5%,var(--background-base))] p-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.06),0_10px_30px_rgba(0,0,0,0.22)]">
+      <form ref={composerRef} onSubmit={submit} className="hermes-mobile-composer hermes-mobile-app-composer shrink-0 px-3 py-2">
+        {composerAttachments.length > 0 && (
+          <div className="hermes-mobile-attachment-tray mb-2 flex gap-1.5 overflow-x-auto px-0.5">
+            {composerAttachments.map((attachment) => (
+              <span key={attachment.id} className="hermes-mobile-attachment-chip">
+                <FileText className="h-3.5 w-3.5" />
+                <span>{attachment.name}</span>
+                <button
+                  type="button"
+                  aria-label={`Remove ${attachment.name}`}
+                  onClick={() => removeComposerAttachment(attachment.id)}
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex items-end gap-2">
           <input
             ref={fileInputRef}
             type="file"
@@ -2411,6 +2527,18 @@ export function MobileChatSurface({
             className="hidden"
             onChange={(event) => void attachFiles(event.currentTarget.files)}
           />
+          <Button
+            type="button"
+            onClick={openFilePicker}
+            disabled={connection !== "open" || !sessionId || running || attachingFiles || Boolean(needsInput)}
+            aria-label="Upload files"
+            title="Upload files"
+            className="hermes-ios-tap mb-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-midground/20 bg-midground/10 p-0 text-center text-midground shadow-[0_0_24px_rgba(45,212,191,0.16)] disabled:opacity-40 disabled:shadow-none"
+          >
+            <span className="relative z-10 grid h-full w-full place-items-center rounded-full">
+              {attachingFiles ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
+            </span>
+          </Button>
           <textarea
             ref={textareaRef}
             value={draft}
@@ -2423,20 +2551,9 @@ export function MobileChatSurface({
             }}
             placeholder={connection === "open" ? "Ask Hermes…" : "Connecting to Hermes…"}
             disabled={Boolean(needsInput)}
-            className="min-h-12 flex-1 resize-none bg-transparent px-2 py-3 text-base leading-6 text-midground outline-none placeholder:text-text-secondary/65"
+            className="hermes-mobile-composer-field min-h-12 min-w-0 flex-1 resize-none px-4 py-3 text-base leading-6 outline-none placeholder:text-text-secondary/65"
             rows={1}
           />
-          <Button
-            type="button"
-            onClick={nudgeVoice}
-            title="Voice ready"
-            aria-label="Voice ready"
-            className="hermes-ios-tap mb-0.5 flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-emerald-200/35 bg-emerald-300/16 p-0 text-center text-emerald-100 shadow-[0_0_28px_rgba(45,212,191,0.34)] hover:bg-emerald-300/22"
-          >
-            <span className="grid h-full w-full place-items-center">
-              <Mic className="h-5 w-5" />
-            </span>
-          </Button>
           {running ? (
             <Button
               type="button"
@@ -2452,16 +2569,15 @@ export function MobileChatSurface({
             draft.trim().length === 0 ? (
               <Button
                 type="button"
-                onClick={openFilePicker}
-                disabled={connection !== "open" || !sessionId || attachingFiles || Boolean(needsInput)}
-                aria-label="Upload files"
-                title="Upload files"
+                onClick={nudgeVoice}
+                title="Voice ready"
+                aria-label="Voice ready"
                 style={contextRingStyle}
-                className="hermes-ios-tap relative mb-0.5 flex h-12 w-12 shrink-0 items-center justify-center overflow-visible rounded-full border border-midground/20 bg-midground/10 p-0 text-center text-midground shadow-[0_0_24px_rgba(45,212,191,0.16)] disabled:opacity-40 disabled:shadow-none"
+                className="hermes-ios-tap relative mb-0.5 flex h-12 w-12 shrink-0 items-center justify-center overflow-visible rounded-full border border-emerald-200/35 bg-emerald-300/16 p-0 text-center text-emerald-100 shadow-[0_0_28px_rgba(45,212,191,0.18)] hover:bg-emerald-300/22"
               >
                 <span aria-hidden="true" className="hermes-context-ring" />
                 <span className="relative z-10 grid h-full w-full place-items-center rounded-full">
-                  {attachingFiles ? <Loader2 className="h-5 w-5 animate-spin" /> : <Plus className="h-5 w-5" />}
+                  <Mic className="h-5 w-5" />
                 </span>
               </Button>
             ) : (

@@ -338,6 +338,10 @@ export const api = {
     }),
   getSessions: (limit = 20, offset = 0) =>
     fetchJSON<PaginatedSessions>(`/api/sessions?limit=${limit}&offset=${offset}`),
+  getWaitingInputSessions: (limit = 10) =>
+    fetchJSON<PaginatedSessions>(`/api/sessions/waiting-input?limit=${limit}`),
+  getActiveWorkSessions: (limit = 10) =>
+    fetchJSON<PaginatedSessions>(`/api/sessions/active-work?limit=${limit}`),
   getSessionMessages: (id: string) =>
     fetchJSON<SessionMessagesResponse>(`/api/sessions/${encodeURIComponent(id)}/messages`),
   getSessionLatestDescendant: (id: string) =>
@@ -369,7 +373,24 @@ export const api = {
         body: JSON.stringify({ title }),
       },
     ),
+  archiveSession: (id: string, archived: boolean) =>
+    fetchJSON<{ ok: boolean; archived: boolean }>(
+      `/api/sessions/${encodeURIComponent(id)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ archived }),
+      },
+    ),
   getSessionStats: () => fetchJSON<SessionStoreStats>("/api/sessions/stats"),
+  getPinnedSessions: () =>
+    fetchJSON<{ ids: string[] }>("/api/sessions/pinned"),
+  setPinnedSessions: (ids: string[]) =>
+    fetchJSON<{ ok: boolean; ids: string[] }>("/api/sessions/pinned", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ids }),
+    }),
   exportSessionUrl: (id: string) =>
     `/api/sessions/${encodeURIComponent(id)}/export`,
   pruneSessions: (older_than_days: number, source?: string) =>
@@ -1558,6 +1579,7 @@ export interface StatusResponse {
 
 export interface SessionInfo {
   id: string;
+  live_session_id?: string;
   source: string | null;
   model: string | null;
   title: string | null;
@@ -1571,6 +1593,20 @@ export interface SessionInfo {
   output_tokens: number;
   preview: string | null;
   parent_session_id?: string | null;
+  pending_kind?: "approval" | "clarify" | "sudo" | "secret" | string;
+  pending_summary?: string | null;
+  pending_request_id?: string;
+  pending_command?: string;
+  pending_description?: string;
+  pending_question?: string;
+  pending_choices?: string[];
+  pending_env_var?: string;
+  pending_prompt?: string;
+  pending_allow_permanent?: boolean;
+  live_status?: "starting" | "working" | "waiting" | "idle" | string;
+  live_running?: boolean;
+  live_inflight_user?: string;
+  live_inflight_assistant?: string;
 }
 
 export interface SessionLatestDescendantResponse {
