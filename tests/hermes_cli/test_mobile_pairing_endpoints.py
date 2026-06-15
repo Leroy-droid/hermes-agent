@@ -1,0 +1,252 @@
+from __future__ import annotations
+
+import json
+
+import pytest
+
+
+@pytest.fixture
+def dashboard_client(monkeypatch, tmp_path):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+    client = TestClient(app)
+    client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+    return client
+
+
+@pytest.fixture
+def unauthenticated_client(monkeypatch, tmp_path):
+    try:
+        from starlette.testclient import TestClient
+    except ImportError:
+        pytest.skip("fastapi/starlette not installed")
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.web_server import app
+
+    return TestClient(app)
+
+
+def test_mobile_pairing_admin_routes_require_dashboard_auth(unauthenticated_client):
+    response = unauthenticated_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPhone", "platform": "ios"},
+    )
+
+    assert response.status_code == 401
+
+
+def test_mobile_pairing_issues_lists_and_revokes_token(dashboard_client, unauthenticated_client):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPhone", "platform": "ios"},
+    )
+    assert issued.status_code == 200
+    body = issued.json()
+    token = body["token"]
+    device_id = body["device"]["device_id"]
+    assert body["token_header"] == _MOBILE_TOKEN_HEADER_NAME
+    assert body["device"]["scopes"] == ["sessions:read"]
+
+    listed = dashboard_client.get("/api/mobile/pairing/devices")
+    assert listed.status_code == 200
+    listed_body = listed.json()
+    assert listed_body["total"] == 1
+    assert listed_body["devices"][0]["device_id"] == device_id
+    assert token not in json.dumps(listed_body)
+
+    auth_check = unauthenticated_client.get(
+        "/api/mobile/auth/check",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+    )
+    assert auth_check.status_code == 200
+    assert auth_check.json()["device"]["device_id"] == device_id
+
+    revoked = dashboard_client.post(
+        "/api/mobile/pairing/revoke",
+        json={"device_id": device_id},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["revoked"] is True
+
+    after_revoke = unauthenticated_client.get(
+        "/api/mobile/auth/check",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+    )
+    assert after_revoke.status_code == 401
+
+    active = dashboard_client.get("/api/mobile/pairing/devices")
+    assert active.json() == {"devices": [], "total": 0}
+
+    all_devices = dashboard_client.get("/api/mobile/pairing/devices?include_revoked=true")
+    assert all_devices.status_code == 200
+    assert all_devices.json()["devices"][0]["revoked_at"] is not None
+
+
+def test_mobile_pairing_rejects_unsupported_scopes(dashboard_client):
+    response = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "sessions:delete"],
+        },
+    )
+
+    assert response.status_code == 400
+    assert "Unsupported mobile scope" in response.json()["detail"]
+
+
+def test_mobile_token_bypasses_dashboard_cookie_gate_for_read_only_path(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPad", "platform": "ipados"},
+    )
+    token = issued.json()["token"]
+
+    previous = getattr(app.state, "auth_required", False)
+    app.state.auth_required = True
+    try:
+        response = unauthenticated_client.get(
+            "/api/mobile/auth/check",
+            headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        )
+    finally:
+        app.state.auth_required = previous
+
+    assert response.status_code == 200
+    assert response.json()["device"]["device_name"] == "Leroy iPad"
+
+
+def test_mobile_token_can_read_sessions_without_dashboard_session(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
+    import hermes_state
+
+    class FakeSessionDB:
+        def list_sessions_rich(self, **kwargs):
+            return [
+                {
+                    "id": "mobile-readable-session",
+                    "title": "Mobile Read Session",
+                    "preview": "Read-only mobile session preview",
+                    "source": "telegram",
+                    "message_count": 3,
+                    "last_active": 1234.0,
+                    "started_at": 1200.0,
+                    "ended_at": None,
+                    "archived": 0,
+                }
+            ]
+
+        def session_count(self, **kwargs):
+            return 1
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPhone", "platform": "ios"},
+    )
+    token = issued.json()["token"]
+
+    previous = getattr(app.state, "auth_required", False)
+    app.state.auth_required = True
+    try:
+        response = unauthenticated_client.get(
+            "/api/sessions?limit=25&offset=0",
+            headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        )
+    finally:
+        app.state.auth_required = previous
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["sessions"][0]["id"] == "mobile-readable-session"
+    assert body["sessions"][0]["archived"] is False
+    assert body["sessions"][0]["is_active"] is False
+
+
+def test_mobile_token_can_read_session_detail_and_messages_but_not_delete(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
+    import hermes_state
+
+    class FakeSessionDB:
+        def resolve_session_id(self, session_id):
+            return session_id if session_id == "mobile-detail-session" else None
+
+        def get_session(self, session_id):
+            return {
+                "id": session_id,
+                "title": "Mobile Detail Session",
+                "source": "telegram",
+                "message_count": 2,
+            }
+
+        def resolve_resume_session_id(self, session_id):
+            return session_id
+
+        def get_messages(self, session_id):
+            return [
+                {"role": "user", "content": "Read this only."},
+                {"role": "assistant", "content": "Showing read-only detail."},
+            ]
+
+        def delete_session(self, session_id):
+            raise AssertionError("mobile token must not reach delete handler")
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(hermes_state, "SessionDB", FakeSessionDB)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPhone", "platform": "ios"},
+    )
+    token = issued.json()["token"]
+    headers = {_MOBILE_TOKEN_HEADER_NAME: token}
+
+    previous = getattr(app.state, "auth_required", False)
+    app.state.auth_required = True
+    try:
+        detail = unauthenticated_client.get("/api/sessions/mobile-detail-session", headers=headers)
+        messages = unauthenticated_client.get("/api/sessions/mobile-detail-session/messages", headers=headers)
+        delete = unauthenticated_client.delete("/api/sessions/mobile-detail-session", headers=headers)
+    finally:
+        app.state.auth_required = previous
+
+    assert detail.status_code == 200
+    assert detail.json()["id"] == "mobile-detail-session"
+    assert messages.status_code == 200
+    assert [m["content"] for m in messages.json()["messages"]] == [
+        "Read this only.",
+        "Showing read-only detail.",
+    ]
+    assert delete.status_code == 401

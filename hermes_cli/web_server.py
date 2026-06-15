@@ -184,6 +184,25 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_MOBILE_TOKEN_HEADER_NAME = "X-Hermes-Mobile-Token"
+_MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
+    "/api/mobile/auth/check",
+    "/api/sessions",
+})
+_MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
+
+
+def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
+    if method.upper() != "GET":
+        return False
+    if path in _MOBILE_TOKEN_READONLY_PATHS:
+        return True
+    if not path.startswith(_MOBILE_TOKEN_SESSION_DETAIL_PREFIX):
+        return False
+    # Allow only read-only session detail and messages endpoints. Keep mutating
+    # session routes (PATCH/DELETE/archive/etc.) protected by dashboard auth.
+    return path.endswith("/messages") or path.count("/") == 3
+_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read"})
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -247,6 +266,30 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), expected.encode())
 
 
+def _has_valid_mobile_token(request: Request, *, required_scope: str = "sessions:read") -> bool:
+    """True if request carries a valid scoped native-device token.
+
+    Mobile tokens are separate from the dashboard SPA token. They are intended
+    for native iPhone/iPad/Mac clients and are only accepted on a very small
+    read-only path allowlist until write scopes have their own confirmation
+    and revocation story.
+    """
+    raw = request.headers.get(_MOBILE_TOKEN_HEADER_NAME, "")
+    if not raw:
+        return False
+    try:
+        from hermes_cli.mobile_pairing import MobilePairingStore
+
+        result = MobilePairingStore().validate_token(raw, required_scope=required_scope)
+    except Exception:
+        _log.exception("mobile token validation failed")
+        return False
+    if result.ok and result.record is not None:
+        request.state.mobile_device = result.record
+        return True
+    return False
+
+
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
@@ -266,6 +309,11 @@ def _require_token(request: Request) -> None:
       making plugin install/enable/disable and the other ``_require_token``
       endpoints permanently unreachable behind the gate. Defer to the gate.
     """
+    if (
+        _is_mobile_token_readonly_path(request.url.path, request.method)
+        and _has_valid_mobile_token(request, required_scope="sessions:read")
+    ):
+        return
     if getattr(request.app.state, "auth_required", False):
         # Gate is authoritative. It attaches ``request.state.session`` on
         # success and 401s otherwise, so a request that reached us is already
@@ -448,7 +496,11 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        if not _has_valid_session_token(request):
+        mobile_ok = (
+            _is_mobile_token_readonly_path(path, request.method)
+            and _has_valid_mobile_token(request, required_scope="sessions:read")
+        )
+        if not mobile_ok and not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -6564,6 +6616,92 @@ async def get_active_work_sessions(limit: int = 10):
     except Exception:
         _log.exception("GET /api/sessions/active-work failed")
         raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class MobilePairingApprove(BaseModel):
+    device_name: str
+    platform: str = "ios"
+    scopes: Optional[List[str]] = None
+
+
+class MobilePairingRevoke(BaseModel):
+    device_id: str
+
+
+def _mobile_device_payload(record: Any) -> Dict[str, Any]:
+    return {
+        "device_id": record.device_id,
+        "device_name": record.device_name,
+        "platform": record.platform,
+        "scopes": list(record.scopes),
+        "created_at": record.created_at,
+        "last_seen_at": record.last_seen_at,
+        "revoked_at": record.revoked_at,
+        "active": record.active,
+    }
+
+
+def _validated_mobile_scopes(scopes: Optional[List[str]]) -> List[str]:
+    requested = [str(scope).strip() for scope in (scopes or ["sessions:read"]) if str(scope).strip()]
+    unknown = sorted(set(requested) - set(_MOBILE_ALLOWED_SCOPES))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported mobile scope(s): {', '.join(unknown)}",
+        )
+    return sorted(set(requested)) or ["sessions:read"]
+
+
+@app.get("/api/mobile/pairing/devices")
+async def list_mobile_pairing_devices(include_revoked: bool = False):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    records = MobilePairingStore().list_devices(include_revoked=include_revoked)
+    devices = [_mobile_device_payload(record) for record in records]
+    return {"devices": devices, "total": len(devices)}
+
+
+@app.post("/api/mobile/pairing/approve")
+async def approve_mobile_pairing(body: MobilePairingApprove):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    scopes = _validated_mobile_scopes(body.scopes)
+    issued = MobilePairingStore().issue_device_token(
+        device_name=body.device_name,
+        platform=body.platform,
+        scopes=scopes,
+    )
+    return {
+        "ok": True,
+        "device": _mobile_device_payload(issued.record),
+        "token": issued.token,
+        "token_header": _MOBILE_TOKEN_HEADER_NAME,
+        "token_shown_once": True,
+    }
+
+
+@app.post("/api/mobile/pairing/revoke")
+async def revoke_mobile_pairing(body: MobilePairingRevoke):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    revoked = MobilePairingStore().revoke_device(body.device_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Mobile device not found or already revoked")
+    return {"ok": True, "device_id": body.device_id, "revoked": True}
+
+
+@app.get("/api/mobile/auth/check")
+async def check_mobile_auth(request: Request):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="sessions:read"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    return {
+        "ok": True,
+        "scope": "sessions:read",
+        "device": _mobile_device_payload(record),
+    }
 
 
 @app.post("/api/sessions/bulk-delete")
