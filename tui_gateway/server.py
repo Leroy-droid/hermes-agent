@@ -1029,6 +1029,53 @@ def _sess(params, rid):
     return (s, _wait_agent(s, rid))
 
 
+def mobile_live_session_status(stored_session_id: str) -> dict:
+    """Return native-mobile sendability for a stored or live gateway session id."""
+    requested = str(stored_session_id or "").strip()
+    if not requested:
+        return {
+            "is_mobile_sendable": False,
+            "live_session_id": "",
+            "mobile_send_unavailable_reason": "session_id required",
+        }
+
+    live_sid = ""
+    session = None
+    with _sessions_lock:
+        for sid, candidate in _sessions.items():
+            if sid == requested or str(candidate.get("session_key") or "") == requested:
+                live_sid = sid
+                session = candidate
+                break
+
+    if session is None:
+        return {
+            "is_mobile_sendable": False,
+            "live_session_id": "",
+            "mobile_send_unavailable_reason": "session is not live in the current Hermes desktop gateway",
+        }
+
+    with session["history_lock"]:
+        if session.get("running"):
+            return {
+                "is_mobile_sendable": False,
+                "live_session_id": live_sid,
+                "mobile_send_unavailable_reason": "session busy",
+            }
+        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            return {
+                "is_mobile_sendable": False,
+                "live_session_id": live_sid,
+                "mobile_send_unavailable_reason": "subagent still running — wait for it to finish",
+            }
+
+    return {
+        "is_mobile_sendable": True,
+        "live_session_id": live_sid,
+        "mobile_send_unavailable_reason": "",
+    }
+
+
 def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> dict:
     """Submit a native-mobile text prompt into an existing live gateway session.
 
@@ -1047,15 +1094,19 @@ def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> d
     if len(prompt) > 4000:
         return {"ok": False, "status_code": 400, "detail": "text must be at most 4000 characters"}
 
-    live_sid = ""
+    status = mobile_live_session_status(requested)
+    if not status.get("is_mobile_sendable"):
+        detail = str(status.get("mobile_send_unavailable_reason") or "mobile send unavailable")
+        return {
+            "ok": False,
+            "status_code": 409 if "busy" in detail or "subagent" in detail else 404,
+            "detail": detail,
+        }
+
+    live_sid = str(status.get("live_session_id") or "")
     session = None
     with _sessions_lock:
-        for sid, candidate in _sessions.items():
-            if sid == requested or str(candidate.get("session_key") or "") == requested:
-                live_sid = sid
-                session = candidate
-                break
-
+        session = _sessions.get(live_sid)
     if session is None:
         return {
             "ok": False,

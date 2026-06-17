@@ -138,8 +138,25 @@ def test_mobile_token_can_read_sessions_without_dashboard_session(
     dashboard_client,
     unauthenticated_client,
 ):
+    from types import SimpleNamespace
     from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
     import hermes_state
+    import importlib
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                mobile_live_session_status=lambda session_id: {
+                    "is_mobile_sendable": session_id == "mobile-readable-session",
+                    "live_session_id": "live-abc" if session_id == "mobile-readable-session" else "",
+                    "mobile_send_unavailable_reason": "" if session_id == "mobile-readable-session" else "session is not live in the current Hermes desktop gateway",
+                }
+            )
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
 
     class FakeSessionDB:
         def list_sessions_rich(self, **kwargs):
@@ -187,6 +204,9 @@ def test_mobile_token_can_read_sessions_without_dashboard_session(
     assert body["sessions"][0]["id"] == "mobile-readable-session"
     assert body["sessions"][0]["archived"] is False
     assert body["sessions"][0]["is_active"] is False
+    assert body["sessions"][0]["is_mobile_sendable"] is True
+    assert body["sessions"][0]["live_session_id"] == "live-abc"
+    assert body["sessions"][0]["mobile_send_unavailable_reason"] == ""
 
 
 def test_mobile_token_can_read_session_detail_and_messages_but_not_delete(

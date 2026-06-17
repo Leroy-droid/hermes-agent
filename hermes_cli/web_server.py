@@ -301,6 +301,34 @@ def _has_valid_mobile_token(request: Request, *, required_scope: str = "sessions
     return False
 
 
+def _mobile_live_session_status_for(session_id: str) -> Dict[str, Any]:
+    """Return mobile sendability flags without exposing token/session secrets."""
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        status = gateway_server.mobile_live_session_status(session_id)
+    except Exception:
+        _log.exception("mobile live-session status lookup failed")
+        status = {}
+
+    is_sendable = bool(status.get("is_mobile_sendable"))
+    return {
+        "is_mobile_sendable": is_sendable,
+        "live_session_id": str(status.get("live_session_id") or ""),
+        "mobile_send_unavailable_reason": "" if is_sendable else str(
+            status.get("mobile_send_unavailable_reason")
+            or "session is not live in the current Hermes desktop gateway"
+        ),
+    }
+
+
+def _annotate_mobile_sendability(sessions: List[Dict[str, Any]]) -> None:
+    for session in sessions:
+        status = _mobile_live_session_status_for(str(session.get("id") or ""))
+        session.update(status)
+
+
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
@@ -2744,6 +2772,7 @@ async def get_sessions(
                     s["is_default_profile"] = profile_name == "default"
                 # SQLite stores the flag as 0/1; expose a real JSON boolean.
                 s["archived"] = bool(s.get("archived"))
+            _annotate_mobile_sendability(sessions)
             return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
         finally:
             db.close()
@@ -2863,6 +2892,7 @@ async def get_profiles_sessions(
     sort_key = "last_active" if order == "recent" else "started_at"
     merged.sort(key=lambda s: s.get(sort_key) or s.get("started_at") or 0, reverse=True)
     window = merged[offset:offset + limit]
+    _annotate_mobile_sendability(window)
     return {
         "sessions": window,
         "total": total,
