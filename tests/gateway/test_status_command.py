@@ -175,6 +175,47 @@ async def test_status_command_tokens_zero_when_session_db_row_missing():
 
 
 @pytest.mark.asyncio
+async def test_status_command_reports_current_context_window(monkeypatch):
+    """/status shows current prompt/context usage separately from cumulative API tokens."""
+    import gateway.run as gateway_run
+
+    session_key = build_session_key(_make_source())
+    session_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+        last_prompt_tokens=80_000,
+    )
+    runner = _make_runner(session_entry)
+    runner._session_model_overrides = {}
+    runner._session_db.get_session.return_value = {
+        "input_tokens": 200_000,
+        "output_tokens": 50_000,
+        "cache_read_tokens": 0,
+        "cache_write_tokens": 0,
+        "reasoning_tokens": 0,
+    }
+
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {"model": {"default": "openai/test-model", "provider": "openai"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.resolve_display_context_length",
+        lambda *_args, **_kwargs: 200_000,
+    )
+
+    result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Cumulative API tokens (re-sent each call):** 250,000" in result
+    assert "**Context Window:** 80,000 / 200,000 tokens (40%, 120,000 left)" in result
+
+
+@pytest.mark.asyncio
 async def test_agents_command_reports_active_agents_and_processes(monkeypatch):
     session_key = build_session_key(_make_source())
     session_entry = SessionEntry(
