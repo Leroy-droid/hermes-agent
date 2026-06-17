@@ -444,8 +444,15 @@ class GatewaySlashCommandsMixin:
             t("gateway.status.created", timestamp=session_entry.created_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.last_activity", timestamp=session_entry.updated_at.strftime('%Y-%m-%d %H:%M')),
             t("gateway.status.tokens", tokens=f"{db_total_tokens:,}"),
-            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no")),
         ])
+
+        context_line = self._format_status_context_window(session_entry, session_key)
+        if context_line:
+            lines.append(context_line)
+
+        lines.append(
+            t("gateway.status.agent_running", state=t("gateway.status.state_yes") if is_running else t("gateway.status.state_no"))
+        )
         if queue_depth:
             lines.append(t("gateway.status.queued", count=queue_depth))
         if source.platform == Platform.MATRIX:
@@ -470,6 +477,81 @@ class GatewaySlashCommandsMixin:
         ])
 
         return "\n".join(lines)
+
+    def _format_status_context_window(self, session_entry: Any, session_key: str) -> str:
+        """Render the current context-window usage line for /status.
+
+        Uses the last provider-reported prompt-token count from the gateway
+        session metadata, not cumulative API tokens. This is the number that
+        best answers "how full is this conversation right now?" for deciding
+        when to start a fresh session.
+        """
+        try:
+            context_tokens = int(getattr(session_entry, "last_prompt_tokens", 0) or 0)
+        except Exception:
+            context_tokens = 0
+
+        model = ""
+        provider = ""
+        base_url = ""
+        api_key = ""
+        custom_providers = None
+        config_context_length = None
+
+        try:
+            from gateway.run import _load_gateway_runtime_config, _resolve_gateway_model
+
+            cfg = _load_gateway_runtime_config()
+            model = _resolve_gateway_model(cfg)
+            model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+            if isinstance(model_cfg, dict):
+                provider = str(model_cfg.get("provider") or "")
+                base_url = str(model_cfg.get("base_url") or "")
+                api_key = str(model_cfg.get("api_key") or "")
+                raw_context_length = model_cfg.get("context_length")
+                if raw_context_length is not None:
+                    config_context_length = int(raw_context_length)
+            custom_providers = cfg.get("custom_providers") if isinstance(cfg, dict) else None
+        except Exception:
+            pass
+
+        try:
+            override = (getattr(self, "_session_model_overrides", {}) or {}).get(session_key, {})
+            if override:
+                model = override.get("model", model)
+                provider = override.get("provider", provider)
+                base_url = override.get("base_url", base_url)
+                api_key = override.get("api_key", api_key)
+        except Exception:
+            pass
+
+        context_length = None
+        if model:
+            try:
+                from hermes_cli.model_switch import resolve_display_context_length
+
+                context_length = resolve_display_context_length(
+                    model,
+                    provider,
+                    base_url=base_url,
+                    api_key=api_key,
+                    custom_providers=custom_providers,
+                    config_context_length=config_context_length,
+                )
+            except Exception:
+                context_length = None
+
+        if context_length and context_length > 0:
+            pct = max(0, min(100, round((context_tokens / context_length) * 100)))
+            remaining = max(0, int(context_length) - context_tokens)
+            return (
+                "**Context Window:** "
+                f"{context_tokens:,} / {int(context_length):,} tokens "
+                f"({pct}%, {remaining:,} left)"
+            )
+        if context_tokens > 0:
+            return f"**Current Context:** {context_tokens:,} tokens (context length unknown)"
+        return ""
 
     @staticmethod
     def _redact_matrix_session_key(session_key: str) -> str:
