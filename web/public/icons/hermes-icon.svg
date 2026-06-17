@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="Hermes">
+  <rect width="512" height="512" rx="112" fill="#041c1c"/>
+  <path d="M109 348c51-122 99-183 147-183s96 61 147 183" fill="none" stroke="#ffe6cb" stroke-width="34" stroke-linecap="round"/>
+  <path d="M153 196c33-51 67-77 103-77s70 26 103 77" fill="none" stroke="#34d399" stroke-width="24" stroke-linecap="round"/>
+  <circle cx="256" cy="263" r="43" fill="#ffe6cb"/>
+  <path d="M198 364h116" stroke="#ffe6cb" stroke-width="30" stroke-linecap="round"/>
+</svg>

@@ -66,7 +66,7 @@ async def test_connect_rejects_same_host_token_lock(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_polling_conflict_retries_before_fatal(monkeypatch):
-    """A single 409 should trigger a retry, not an immediate fatal error."""
+    """A single 409 backs off without creating a second polling loop."""
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     fatal_handler = AsyncMock()
     adapter.set_fatal_error_handler(fatal_handler)
@@ -116,16 +116,16 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
 
     conflict = type("Conflict", (Exception,), {})
 
-    # First conflict: should retry, NOT be fatal
-    captured["error_callback"](conflict("Conflict: terminated by other getUpdates request"))
-    await asyncio.sleep(0)
-    await asyncio.sleep(0)
-    # Give the scheduled task a chance to run
-    for _ in range(10):
-        await asyncio.sleep(0)
+    # First conflict: should back off, NOT be fatal. Call the coroutine
+    # directly to assert handler behavior without event-loop scheduling noise.
+    await adapter._handle_polling_conflict(
+        conflict("Conflict: terminated by other getUpdates request")
+    )
 
     assert adapter.has_fatal_error is False, "First conflict should not be fatal"
-    assert adapter._polling_conflict_count == 0, "Count should reset after successful retry"
+    assert adapter._polling_conflict_count == 1
+    updater.stop.assert_not_awaited()
+    assert updater.start_polling.await_count == 1, "conflict handler must not restart polling"
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     async def fake_start_polling(**kwargs):
         captured["error_callback"] = kwargs["error_callback"]
 
-    # Make start_polling fail on retries to exhaust retries
+    # Initial start succeeds; conflict handling must not call start_polling again.
     call_count = {"n": 0}
 
     async def failing_start_polling(**kwargs):
@@ -158,8 +158,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
             # First call (initial connect) succeeds
             captured["error_callback"] = kwargs["error_callback"]
         else:
-            # Retry calls fail
-            raise Exception("Connection refused")
+            raise AssertionError("conflict handler must not restart polling")
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=failing_start_polling),
@@ -196,8 +195,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
             conflict("Conflict: terminated by other getUpdates request")
         )
 
-    # After 5 failed retries (count 1-5 each enter the retry branch but
-    # start_polling raises), the 6th conflict pushes count to 6 which
+    # After 5 backed-off conflicts, the 6th conflict pushes count to 6 which
     # exceeds MAX_CONFLICT_RETRIES (5), entering the fatal branch.
     assert adapter.fatal_error_code == "telegram_polling_conflict", (
         f"Expected fatal after 6 conflicts, got code={adapter.fatal_error_code}, "
@@ -205,6 +203,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     )
     assert adapter.has_fatal_error is True
     fatal_handler.assert_awaited_once()
+    assert updater.start_polling.await_count == 1
 
 
 @pytest.mark.asyncio
@@ -312,18 +311,11 @@ async def test_disconnect_skips_inactive_updater_and_app(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
-    """Regression for #19471.
+async def test_polling_conflict_handler_does_not_restart_polling(monkeypatch):
+    """Regression: the PTB network loop owns retries after a 409 conflict.
 
-    When a conflict-retry's start_polling raises and we are still below the
-    retry ceiling, the handler reschedules itself via loop.create_task. The
-    old code used the deprecated asyncio.get_event_loop(), which raises
-    "RuntimeError: There is no current event loop in thread 'MainThread'" on
-    Python 3.11+ when no loop is attached to the thread (as happens when PTB
-    dispatches this error callback). That left the gateway alive but silent
-    and drove the --replace crash loop. The fix uses get_running_loop(), which
-    is always valid inside a coroutine. Force get_event_loop() to raise so a
-    regression would surface as the original RuntimeError, not pass silently.
+    Restarting polling from the error callback creates a second polling loop
+    inside the same process, which self-sustains Telegram getUpdates conflicts.
     """
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="***"))
     adapter.set_fatal_error_handler(AsyncMock())
@@ -345,8 +337,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
         if call_count["n"] == 1:
             captured["error_callback"] = kwargs["error_callback"]
         else:
-            # Retry attempt fails so the handler enters the reschedule branch.
-            raise Exception("Connection refused")
+            raise AssertionError("conflict handler must not restart polling")
 
     updater = SimpleNamespace(
         start_polling=AsyncMock(side_effect=failing_start_polling),
@@ -375,26 +366,14 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     ok = await adapter.connect()
     assert ok is True
 
-    # If the fix regresses to get_event_loop(), this makes it raise — the same
-    # RuntimeError users hit in #19471. The running-loop path ignores it.
-    def _boom():
-        raise RuntimeError("There is no current event loop in thread 'MainThread'.")
-
-    monkeypatch.setattr("asyncio.get_event_loop", _boom)
-
     conflict = type("Conflict", (Exception,), {})
 
-    # One conflict: count goes to 1 (< MAX), retry's start_polling raises,
-    # handler reschedules via loop.create_task — the previously-broken line.
+    # One conflict: count goes to 1 (< MAX), backs off, and returns. It must
+    # not stop or restart the running PTB updater.
     await adapter._handle_polling_conflict(
         conflict("Conflict: terminated by other getUpdates request")
     )
 
     assert adapter.has_fatal_error is False
-    assert adapter._polling_error_task is not None
-    # The rescheduled task must be schedulable on the running loop.
-    adapter._polling_error_task.cancel()
-    try:
-        await adapter._polling_error_task
-    except (asyncio.CancelledError, Exception):
-        pass
+    updater.stop.assert_not_awaited()
+    assert updater.start_polling.await_count == 1

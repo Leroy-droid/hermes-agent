@@ -19,6 +19,7 @@ import {
 import {
   Activity,
   BarChart3,
+  Bell,
   BookOpen,
   Clock,
   Code,
@@ -33,6 +34,7 @@ import {
   KeyRound,
   Menu,
   MessageSquare,
+  MoreHorizontal,
   Package,
   PanelLeftClose,
   PanelLeftOpen,
@@ -59,7 +61,7 @@ import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
-import { SidebarStatusStrip, gatewayLine } from "@/components/SidebarStatusStrip";
+import { SidebarStatusStrip } from "@/components/SidebarStatusStrip";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
 import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
@@ -101,7 +103,13 @@ import { api } from "@/lib/api";
 import type { StatusResponse } from "@/lib/api";
 
 function RootRedirect() {
-  return <Navigate to="/sessions" replace />;
+  const mobileLike =
+    typeof window !== "undefined" &&
+    (window.matchMedia("(max-width: 1023px)").matches ||
+      window.matchMedia("(display-mode: standalone)").matches ||
+      Boolean((window.navigator as Navigator & { standalone?: boolean }).standalone));
+
+  return <Navigate to={mobileLike ? "/chat" : "/sessions"} replace />;
 }
 
 function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
@@ -118,6 +126,16 @@ const CHAT_NAV_ITEM: NavItem = {
   label: "Chat",
   icon: Terminal,
 };
+
+const MOBILE_TAB_ORDER = {
+  chat: 0,
+  sessions: 1,
+  alerts: 2,
+  more: 3,
+} as const;
+
+type MobileTabKey = keyof typeof MOBILE_TAB_ORDER;
+type MobileTabDirection = "left" | "right";
 
 /**
  * Built-in routes except /chat.  Chat is rendered persistently (outside
@@ -223,6 +241,8 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Code,
   Eye,
 };
+
+const MOBILE_DOCK_PATHS = ["/chat", "/sessions"];
 
 function resolveIcon(name: string): ComponentType<{ className?: string }> {
   return ICON_MAP[name] ?? Puzzle;
@@ -346,11 +366,18 @@ const SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
 
 export default function App() {
   const { t } = useI18n();
-  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const { pathname, search } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [mobileMoreScrolled, setMobileMoreScrolled] = useState(false);
+  const [mobileAttentionCount, setMobileAttentionCount] = useState(0);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const [mobileTabTransition, setMobileTabTransition] = useState<{
+    direction: MobileTabDirection;
+    nonce: number;
+  }>({ direction: "right", nonce: 0 });
 
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -368,14 +395,37 @@ export default function App() {
       return next;
     });
   }, []);
-  const isMobile = useBelowBreakpoint(1024);
+  const normalizedPath = pathname.replace(/\/$/, "") || "/";
+  const isChatRoute = normalizedPath === "/chat";
+  const isSessionsRoute = normalizedPath === "/sessions";
+  const forceMobileSurface = (isChatRoute || isSessionsRoute) && new URLSearchParams(search).get("mobile") === "1";
+  const isMobile = useBelowBreakpoint(1024) || forceMobileSurface;
   const isDesktopCollapsed = collapsed && !isMobile;
   const tooltipWarmRef = useRef(0);
   const sidebarStatus = useSidebarStatus();
   const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
-  const normalizedPath = pathname.replace(/\/$/, "") || "/";
-  const isChatRoute = normalizedPath === "/chat";
+  const isMobileSurfaceRoute = isChatRoute || isSessionsRoute;
   const embeddedChat = isDashboardEmbeddedChatEnabled();
+  const activeMobileTab: MobileTabKey = mobileOpen
+    ? "more"
+    : isChatRoute && new URLSearchParams(search).get("panel") === "needs-input"
+      ? "alerts"
+      : isChatRoute
+        ? "chat"
+        : isSessionsRoute
+          ? "sessions"
+          : "more";
+  const activeMobileTabIndex = MOBILE_TAB_ORDER[activeMobileTab];
+  const previousMobileTabIndexRef = useRef(activeMobileTabIndex);
+  const mobileTransitionClass = cn(
+    mobileTabTransition.direction === "left"
+      ? mobileTabTransition.nonce % 2 === 0
+        ? "hermes-mobile-tab-enter-left-a"
+        : "hermes-mobile-tab-enter-left-b"
+      : mobileTabTransition.nonce % 2 === 0
+        ? "hermes-mobile-tab-enter-right-a"
+        : "hermes-mobile-tab-enter-right-b",
+  );
 
   // `dashboard.show_token_analytics` gates the Analytics nav item.  The
   // page itself remains reachable by URL (it renders an explanation when
@@ -452,7 +502,34 @@ export default function App() {
     [manifests],
   );
 
+  const mobileDockItems = useMemo(() => {
+    const byPath = new Map(builtinNav.map((item) => [item.path, item]));
+    return MOBILE_DOCK_PATHS
+      .map((path) => byPath.get(path))
+      .filter((item): item is NavItem => Boolean(item));
+  }, [builtinNav]);
+
+  const currentMobileLabel = useMemo(() => {
+    const current = builtinNav.find((item) => item.path === normalizedPath);
+    if (!current) return t.app.brand;
+    return current.labelKey
+      ? ((t.app.nav as Record<string, string>)[current.labelKey] ?? current.label)
+      : current.label;
+  }, [builtinNav, normalizedPath, t]);
+
   const layoutVariant = theme.layoutVariant ?? "standard";
+
+  useEffect(() => {
+    const onMobileAttention = (event: Event) => {
+      const detail = (event as CustomEvent<{ count?: unknown }>).detail;
+      const count = typeof detail?.count === "number" && Number.isFinite(detail.count)
+        ? Math.max(0, Math.floor(detail.count))
+        : 0;
+      setMobileAttentionCount(count);
+    };
+    window.addEventListener("hermes-mobile-attention", onMobileAttention);
+    return () => window.removeEventListener("hermes-mobile-attention", onMobileAttention);
+  }, []);
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -469,6 +546,39 @@ export default function App() {
   }, [mobileOpen]);
 
   useEffect(() => {
+    const previous = previousMobileTabIndexRef.current;
+    if (previous === activeMobileTabIndex) return;
+    previousMobileTabIndexRef.current = activeMobileTabIndex;
+    setMobileTabTransition((current) => ({
+      direction: activeMobileTabIndex < previous ? "left" : "right",
+      nonce: current.nonce + 1,
+    }));
+  }, [activeMobileTabIndex]);
+
+  const prepareMobileTabTransition = useCallback((nextTab: MobileTabKey) => {
+    const previous = previousMobileTabIndexRef.current;
+    const next = MOBILE_TAB_ORDER[nextTab];
+    if (previous === next) return;
+    previousMobileTabIndexRef.current = next;
+    setMobileTabTransition((current) => ({
+      direction: next < previous ? "left" : "right",
+      nonce: current.nonce + 1,
+    }));
+  }, []);
+
+  const navigateMobileTab = useCallback((nextTab: MobileTabKey, path: string) => {
+    prepareMobileTabTransition(nextTab);
+    setMobileOpen(false);
+    navigate(path);
+  }, [navigate, prepareMobileTabTransition]);
+
+  const openMobileMore = useCallback(() => {
+    prepareMobileTabTransition("more");
+    setMobileMoreScrolled(false);
+    setMobileOpen(true);
+  }, [prepareMobileTabTransition]);
+
+  useEffect(() => {
     const mql = window.matchMedia("(min-width: 1024px)");
     const onChange = (e: MediaQueryListEvent) => {
       if (e.matches) setMobileOpen(false);
@@ -480,25 +590,29 @@ export default function App() {
   return (
     <ProfileProvider>
     <div
+      data-chat-route={isChatRoute ? "true" : "false"}
+      data-mobile-surface-route={isMobileSurfaceRoute ? "true" : "false"}
+      data-force-mobile-surface={forceMobileSurface ? "true" : "false"}
       data-layout-variant={layoutVariant}
-      className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased"
+      className={cn(
+        "flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-black text-text-primary antialiased",
+        forceMobileSurface && "bg-[#111820]",
+      )}
     >
       <SelectionSwitcher />
-      <Backdrop />
-      <PluginSlot name="backdrop" />
+      {!forceMobileSurface && (
+        <>
+          <Backdrop />
+          <PluginSlot name="backdrop" />
+        </>
+      )}
 
       <header
         className={cn(
-          "lg:hidden fixed top-0 left-0 right-0 z-40 min-h-14",
-          "flex items-center gap-2 px-4 py-2",
-          "border-b border-current/20",
-          "bg-background-base/90 backdrop-blur-sm",
+          "lg:hidden fixed left-3 right-3 top-[calc(0.55rem+env(safe-area-inset-top,0px))] z-40 min-h-12",
+          "hermes-ios-surface flex items-center gap-2 rounded-full px-2.5 py-2",
+          isMobileSurfaceRoute && "hidden",
         )}
-        style={{
-          background: "var(--component-header-background)",
-          borderImage: "var(--component-header-border-image)",
-          clipPath: "var(--component-header-clip-path)",
-        }}
       >
         <Button
           ghost
@@ -507,17 +621,24 @@ export default function App() {
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className="text-text-secondary hover:text-midground"
+          className="hermes-ios-tap h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
         >
-          <Menu />
+          <Menu className="h-5 w-5" />
         </Button>
 
-        <Typography
-          className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
-          style={{ mixBlendMode: "plus-lighter" }}
-        >
-          {t.app.brand}
-        </Typography>
+        <div className="min-w-0 flex-1">
+          <Typography
+            className="truncate text-[0.95rem] font-semibold leading-tight tracking-[-0.015em] text-midground"
+            style={{ mixBlendMode: "plus-lighter" }}
+          >
+            {currentMobileLabel}
+          </Typography>
+          <div className="truncate text-[0.68rem] leading-tight text-text-secondary">
+            Hermes mobile
+          </div>
+        </div>
+
+        <div className="mr-1 h-2.5 w-2.5 rounded-full bg-success shadow-[0_0_18px_rgba(74,222,128,0.7)]" />
       </header>
 
       {mobileOpen && (
@@ -526,36 +647,59 @@ export default function App() {
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "lg:hidden fixed inset-0 z-40 p-0 block",
-            "bg-black/60 backdrop-blur-sm",
+            "lg:hidden fixed inset-x-0 top-0 bottom-[calc(5.25rem+env(safe-area-inset-bottom,0px))] z-40 block p-0",
+            "bg-transparent transition-opacity duration-300",
           )}
         />
       )}
 
-      <PluginSlot name="header-banner" />
-      <ProfileScopeBanner />
+      {!forceMobileSurface && (
+        <>
+          <PluginSlot name="header-banner" />
+          <ProfileScopeBanner />
+        </>
+      )}
 
-      <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+      <div
+        className={cn(
+          "flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden lg:pt-0",
+          forceMobileSurface
+            ? "pt-0"
+            : isMobileSurfaceRoute
+            ? "pt-[calc(0.7rem+env(safe-area-inset-top,0px))]"
+            : "pt-[calc(4.25rem+env(safe-area-inset-top,0px))]",
+        )}
+      >
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
+            data-open={mobileOpen ? "true" : "false"}
             className={cn(
-              "fixed top-0 left-0 z-50 flex h-dvh max-h-dvh w-64 min-h-0 flex-col",
-              "border-r border-current/20",
+              "hermes-mobile-panel fixed left-3 right-3 top-[calc(0.9rem+env(safe-area-inset-top,0px))] z-50 flex h-[calc(100dvh-6.2rem-env(safe-area-inset-top,0px)-env(safe-area-inset-bottom,0px))] max-h-dvh min-h-0 flex-col overflow-hidden rounded-[1.65rem]",
+              "border border-current/16",
               "bg-background-base/95 backdrop-blur-sm",
-              "transition-[transform] duration-200 ease-out",
-              mobileOpen ? "translate-x-0" : "-translate-x-full",
-              "lg:sticky lg:top-0 lg:translate-x-0 lg:shrink-0 lg:overflow-hidden",
+              "transition-[transform,opacity] duration-[320ms] ease-[cubic-bezier(0.32,0.72,0,1)]",
+              mobileOpen ? "translate-x-0 opacity-100" : "-translate-x-[calc(100%+1rem)] opacity-0",
+              isMobile && mobileOpen && mobileTransitionClass,
+              "lg:sticky lg:left-0 lg:right-auto lg:top-0 lg:h-dvh lg:w-64 lg:rounded-none lg:border-r lg:translate-x-0 lg:opacity-100 lg:shrink-0 lg:overflow-hidden",
               "lg:transition-[width] lg:duration-[600ms] lg:ease-[cubic-bezier(0.33,1.35,0.62,1)]",
               collapsed && "lg:w-14",
+              isMobile && "hermes-ios-surface hermes-mythic-frame border-current/10 bg-transparent",
+              forceMobileSurface && "hidden",
             )}
             style={{
-              background: "var(--component-sidebar-background)",
-              clipPath: "var(--component-sidebar-clip-path)",
+              background: isMobile ? undefined : "var(--component-sidebar-background)",
+              clipPath: isMobile ? undefined : "var(--component-sidebar-clip-path)",
               borderImage: "var(--component-sidebar-border-image)",
             }}
           >
+            {isMobile && !forceMobileSurface && (
+              <span
+                aria-hidden="true"
+                className="hermes-mythic-art hermes-mythic-art--more"
+              />
+            )}
             <div
               className={cn(
                 "flex h-14 shrink-0 items-center gap-2",
@@ -586,7 +730,7 @@ export default function App() {
                 size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className="lg:hidden text-text-secondary hover:text-midground"
+                className="hermes-ios-tap lg:hidden h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
               >
                 <X />
               </Button>
@@ -610,55 +754,66 @@ export default function App() {
 
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
-            <nav
-              className="min-h-0 w-full flex-1 overflow-y-auto overflow-x-hidden border-t border-current/10 py-2"
-              aria-label={t.app.navigation}
+            <div
+              className="hermes-mobile-nav-scroll-frame min-h-0 w-full flex-1 border-t border-current/10"
+              data-nav-scrolled={mobileMoreScrolled ? "true" : "false"}
             >
-              <ul className="flex flex-col">
-                {sidebarNav.coreItems.map((item) => (
-                  <SidebarNavLink
-                    closeMobile={closeMobile}
-                    collapsed={isDesktopCollapsed}
-                    item={item}
-                    key={item.path}
-                    t={t}
-                    tooltipWarmRef={tooltipWarmRef}
-                  />
-                ))}
-              </ul>
+              <nav
+                className="h-full min-h-0 w-full overflow-y-auto overflow-x-hidden py-2"
+                aria-label={t.app.navigation}
+                onScroll={(event) => {
+                  const scrolled = event.currentTarget.scrollTop > 2;
+                  setMobileMoreScrolled((current) =>
+                    current === scrolled ? current : scrolled,
+                  );
+                }}
+              >
+                <ul className="flex flex-col">
+                  {sidebarNav.coreItems.map((item) => (
+                    <SidebarNavLink
+                      closeMobile={closeMobile}
+                      collapsed={isDesktopCollapsed}
+                      item={item}
+                      key={item.path}
+                      t={t}
+                      tooltipWarmRef={tooltipWarmRef}
+                    />
+                  ))}
+                </ul>
 
-              {sidebarNav.pluginItems.length > 0 && (
-                <div
-                  aria-labelledby="hermes-sidebar-plugin-nav-heading"
-                  className="flex flex-col border-t border-current/10 pb-2"
-                  role="group"
-                >
-                  <span
-                    className={cn(
-                      "px-5 pt-2.5 pb-1",
-                      "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
-                      isDesktopCollapsed && "lg:hidden",
-                    )}
-                    id="hermes-sidebar-plugin-nav-heading"
+                {sidebarNav.pluginItems.length > 0 && (
+                  <div
+                    aria-labelledby="hermes-sidebar-plugin-nav-heading"
+                    className="flex flex-col border-t border-current/10 pb-2"
+                    role="group"
                   >
-                    {t.app.pluginNavSection}
-                  </span>
+                    <span
+                      className={cn(
+                        "px-5 pt-2.5 pb-1",
+                        "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+                        isDesktopCollapsed && "lg:hidden",
+                      )}
+                      id="hermes-sidebar-plugin-nav-heading"
+                    >
+                      {t.app.pluginNavSection}
+                    </span>
 
-                  <ul className="flex flex-col">
-                    {sidebarNav.pluginItems.map((item) => (
-                      <SidebarNavLink
-                        closeMobile={closeMobile}
-                        collapsed={isDesktopCollapsed}
-                        item={item}
-                        key={item.path}
-                        t={t}
-                        tooltipWarmRef={tooltipWarmRef}
-                      />
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </nav>
+                    <ul className="flex flex-col">
+                      {sidebarNav.pluginItems.map((item) => (
+                        <SidebarNavLink
+                          closeMobile={closeMobile}
+                          collapsed={isDesktopCollapsed}
+                          item={item}
+                          key={item.path}
+                          t={t}
+                          tooltipWarmRef={tooltipWarmRef}
+                        />
+                      ))}
+                    </ul>
+                  </div>
+                )}
+              </nav>
+            </div>
 
             <SidebarSystemActions
               collapsed={isDesktopCollapsed}
@@ -672,6 +827,7 @@ export default function App() {
                 "flex shrink-0 items-center gap-2",
                 "px-3 py-2",
                 "border-t border-current/20",
+                "max-lg:hidden",
                 isDesktopCollapsed
                   ? "lg:flex-col lg:items-start lg:gap-3 lg:py-3"
                   : "justify-between",
@@ -710,7 +866,18 @@ export default function App() {
               )}
             >
               <AuthWidget />
-              <SidebarFooter status={sidebarStatus} />
+              <SidebarFooter
+                mobileThemeControl={
+                  <SidebarIconWithTooltip
+                    collapsed={isDesktopCollapsed}
+                    label={t.theme?.switchTheme ?? "Switch theme"}
+                    tooltipWarmRef={tooltipWarmRef}
+                  >
+                    <ThemeSwitcher collapsed={isDesktopCollapsed} dropUp />
+                  </SidebarIconWithTooltip>
+                }
+                status={sidebarStatus}
+              />
             </div>
           </aside>
 
@@ -718,18 +885,22 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-0 pt-1 sm:pt-2 lg:pt-4"
+                forceMobileSurface ? "px-0 py-0" : "px-3 sm:px-6",
+                isMobile && isMobileSurfaceRoute && !mobileOpen && mobileTransitionClass,
+                forceMobileSurface
+                  ? ""
+                  : isMobileSurfaceRoute
+                  ? "pb-[calc(5.25rem+env(safe-area-inset-bottom,0px))] pt-1 sm:pt-2 lg:pb-0 lg:pt-4"
                   : "pt-2 sm:pt-4 lg:pt-6",
                 isDocsRoute && "min-h-0 flex-1",
               )}
-            >
-              <PluginSlot name="pre-main" />
+              >
+                {!forceMobileSurface && <PluginSlot name="pre-main" />}
               <div
                 className={cn(
                   "w-full min-w-0",
-                  !isChatRoute &&
+                  !isMobileSurfaceRoute && "hermes-mobile-page-frame",
+                  !isMobileSurfaceRoute &&
                     "pb-[calc(2rem+env(safe-area-inset-bottom,0px))] lg:pb-8",
                   (isDocsRoute || isChatRoute) &&
                     "min-h-0 flex flex-1 flex-col",
@@ -777,11 +948,22 @@ export default function App() {
                     </div>
                   ))}
               </div>
-              <PluginSlot name="post-main" />
+              {!forceMobileSurface && <PluginSlot name="post-main" />}
             </div>
           </PageHeaderProvider>
         </div>
       </div>
+
+      {isMobile && !forceMobileSurface && (
+        <MobileBottomDock
+          attentionCount={mobileAttentionCount}
+          items={mobileDockItems}
+          onNavigate={navigateMobileTab}
+          moreOpen={mobileOpen}
+          onMore={openMobileMore}
+          t={t}
+        />
+      )}
 
       <PluginSlot name="overlay" />
     </div>
@@ -799,6 +981,94 @@ export default function App() {
  * the new scope. The persistent ChatPage host below handles its own
  * remount (channel keyed on scopedProfile).
  */
+function MobileBottomDock({ attentionCount, items, moreOpen, onMore, onNavigate, t }: MobileBottomDockProps) {
+  const { pathname, search } = useLocation();
+  const alertsActive =
+    pathname.replace(/\/$/, "") === "/chat" &&
+    new URLSearchParams(search).get("panel") === "needs-input";
+  const alertsLabel = attentionCount > 0
+    ? `Alerts, ${attentionCount} item${attentionCount === 1 ? "" : "s"} waiting`
+    : "Alerts";
+
+  return (
+    <nav
+      aria-label="Primary mobile navigation"
+      className="hermes-mobile-dock hermes-ios-surface lg:hidden fixed bottom-[calc(0.65rem+env(safe-area-inset-bottom,0px))] left-3 right-3 z-40 flex items-center justify-between gap-1 rounded-[1.55rem] px-2 py-2"
+    >
+      {items.map((item) => {
+        const Icon = item.icon;
+        const label = item.labelKey
+          ? ((t.app.nav as Record<string, string>)[item.labelKey] ?? item.label)
+          : item.label;
+        const tabKey: MobileTabKey = item.path === "/sessions" ? "sessions" : "chat";
+        return (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            end={item.path === "/sessions"}
+            onClick={(event) => {
+              event.preventDefault();
+              onNavigate(tabKey, item.path);
+            }}
+            className={({ isActive }) =>
+              cn(
+                "hermes-ios-tap flex min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[1.2rem] px-2 py-2 text-[0.62rem] font-medium leading-none tracking-[-0.01em]",
+                isActive && !moreOpen && !(item.path === "/chat" && alertsActive)
+                  ? "bg-midground text-background-base shadow-[0_10px_28px_rgba(255,230,203,0.18)]"
+                  : "text-text-secondary hover:bg-midground/8 hover:text-midground",
+              )
+            }
+          >
+            <Icon className="h-[1.125rem] w-[1.125rem]" />
+            <span className="max-w-full truncate">{label}</span>
+          </NavLink>
+        );
+      })}
+
+      <NavLink
+        to="/chat?panel=needs-input"
+        aria-label={alertsLabel}
+        onClick={(event) => {
+          event.preventDefault();
+          onNavigate("alerts", "/chat?panel=needs-input");
+        }}
+        className={cn(
+          "hermes-ios-tap relative flex h-auto min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[1.2rem] px-1.5 py-2 text-[0.62rem] font-medium leading-none tracking-[-0.01em]",
+          alertsActive && !moreOpen
+            ? "bg-midground text-background-base shadow-[0_10px_28px_rgba(255,230,203,0.18)]"
+            : attentionCount > 0
+            ? "text-warning hover:bg-warning/10"
+            : "text-text-secondary hover:bg-midground/8 hover:text-midground",
+        )}
+      >
+        <Bell className="h-[1.125rem] w-[1.125rem]" />
+        <span className="max-w-full truncate">Alerts</span>
+        {attentionCount > 0 && (
+          <span className="absolute right-[27%] top-1.5 grid min-h-4 min-w-4 place-items-center rounded-full border border-warning/35 bg-warning px-1 text-[0.58rem] font-semibold leading-none text-background-base shadow-[0_0_16px_rgba(255,189,56,0.45)]">
+            {attentionCount}
+          </span>
+        )}
+      </NavLink>
+
+      <Button
+        ghost
+        onClick={onMore}
+        aria-expanded={moreOpen}
+        aria-controls="app-sidebar"
+        className={cn(
+          "hermes-ios-tap flex h-auto min-h-12 min-w-0 flex-1 flex-col items-center justify-center gap-1 rounded-[1.2rem] px-2 py-2 text-[0.62rem] font-medium leading-none tracking-[-0.01em]",
+          moreOpen
+            ? "bg-midground text-background-base shadow-[0_10px_28px_rgba(255,230,203,0.18)]"
+            : "text-text-secondary hover:bg-midground/8 hover:text-midground",
+        )}
+      >
+        <MoreHorizontal className="h-[1.125rem] w-[1.125rem]" />
+        <span>More</span>
+      </Button>
+    </nav>
+  );
+}
+
 function ProfileKeyedRoutes({ children }: { children: ReactNode }) {
   const { profile } = useProfileScope();
   return <div key={profile || "__own__"} className="contents">{children}</div>;
@@ -812,8 +1082,7 @@ function SidebarNavLink({
   t,
 }: SidebarNavLinkProps) {
   const { path, label, labelKey, icon: Icon } = item;
-  const liRef = useRef<HTMLLIElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const navLabel = labelKey
     ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
@@ -821,27 +1090,26 @@ function SidebarNavLink({
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <NavLink
         to={path}
         end={path === "/sessions"}
         onClick={closeMobile}
         aria-label={collapsed ? navLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+        onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
         className={({ isActive }) =>
           cn(
-            "group/nav relative flex items-center gap-3",
-            "px-5 py-2.5",
+            "group/nav hermes-ios-tap relative flex items-center gap-3 rounded-2xl",
+            "mx-2 px-4 py-3 lg:mx-0 lg:rounded-none lg:px-5 lg:py-2.5",
             "font-mondwest text-display uppercase text-sm tracking-[0.12em]",
             "whitespace-nowrap transition-colors cursor-pointer",
             "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
             isActive
-              ? "text-midground"
-              : "text-text-secondary hover:text-midground",
+              ? "bg-midground/12 text-midground lg:bg-transparent"
+              : "text-text-secondary hover:bg-midground/8 hover:text-midground lg:hover:bg-transparent",
           )
         }
         style={{
@@ -877,8 +1145,8 @@ function SidebarNavLink({
         )}
       </NavLink>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={navLabel} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={navLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -898,6 +1166,8 @@ function SidebarSystemActions({
   const items: SystemActionItem[] = [
     {
       action: "restart",
+      compactLabel: "Restart",
+      compactRunningLabel: "Restarting",
       icon: RotateCw,
       label: t.status.restartGateway,
       runningLabel: t.status.restartingGateway,
@@ -905,6 +1175,8 @@ function SidebarSystemActions({
     },
     {
       action: "update",
+      compactLabel: "Update",
+      compactRunningLabel: "Updating",
       icon: Download,
       label: t.status.updateHermes,
       runningLabel: t.status.updatingHermes,
@@ -922,28 +1194,33 @@ function SidebarSystemActions({
   return (
     <div
       className={cn(
-        "shrink-0 flex flex-col",
+        "hermes-sidebar-system-actions shrink-0 flex flex-col",
         "border-t border-current/10",
         "py-1",
+        "max-lg:mx-3 max-lg:mb-2 max-lg:rounded-[1.05rem] max-lg:border max-lg:border-midground/12 max-lg:bg-background-base/28 max-lg:px-1 max-lg:py-1 max-lg:shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] max-lg:backdrop-blur-xl",
       )}
     >
       <span
         className={cn(
           "px-5 pt-0.5 pb-0.5",
           "font-mondwest text-display text-xs tracking-[0.12em] text-text-tertiary",
+          "max-lg:hidden",
           collapsed && "lg:hidden",
         )}
       >
         {t.app.system}
       </span>
 
-      <div className={cn(collapsed && "lg:hidden")}>
-        <SidebarStatusStrip status={status} />
+      <div className={cn("max-lg:min-w-0", collapsed && "lg:hidden")}>
+        <SidebarStatusStrip
+          className="max-lg:px-2 max-lg:pb-1 max-lg:pt-1"
+          status={status}
+        />
       </div>
 
       <GatewayDot collapsed={collapsed} status={status} tooltipWarmRef={tooltipWarmRef} />
 
-      <ul className="flex flex-col">
+      <ul className="flex flex-col max-lg:grid max-lg:grid-cols-2 max-lg:gap-1 max-lg:px-1 max-lg:pb-1">
         {items.map((item) => (
           <SystemActionButton
             key={item.action}
@@ -970,35 +1247,36 @@ function SystemActionButton({
   onClick,
   tooltipWarmRef,
 }: SystemActionButtonProps) {
-  const { icon: Icon, label, runningLabel, spin } = item;
-  const liRef = useRef<HTMLLIElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const { compactLabel, compactRunningLabel, icon: Icon, label, runningLabel, spin } = item;
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
   const busy = isPending || isActionRunning;
   const displayLabel = isActionRunning ? runningLabel : label;
+  const compactDisplayLabel = isActionRunning ? compactRunningLabel : compactLabel;
 
   return (
     <li
-      ref={liRef}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <button
         onClick={onClick}
         disabled={disabled}
         aria-busy={busy}
         aria-label={collapsed ? displayLabel : undefined}
-        onFocus={collapsed ? () => setHovered(true) : undefined}
-        onBlur={collapsed ? () => setHovered(false) : undefined}
+        onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+        onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
         type="button"
         className={cn(
-          "group/action relative flex w-full items-center gap-3",
-          "px-5 py-2.5",
+          "group/action hermes-ios-tap relative flex w-full items-center gap-3 rounded-2xl",
+          "mx-2 px-4 py-3 lg:mx-0 lg:rounded-none lg:px-5 lg:py-2.5",
+          "max-lg:mx-0 max-lg:justify-center max-lg:gap-1.5 max-lg:rounded-[0.8rem] max-lg:px-2 max-lg:py-2",
           "font-mondwest text-display text-xs tracking-[0.1em]",
+          "max-lg:text-[0.62rem] max-lg:tracking-[0.055em]",
           "whitespace-nowrap transition-colors cursor-pointer",
           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
           busy
-            ? "text-midground"
-            : "text-text-secondary hover:text-midground",
+            ? "bg-midground/12 text-midground lg:bg-transparent"
+            : "text-text-secondary hover:bg-midground/8 hover:text-midground lg:hover:bg-transparent",
           "disabled:text-text-disabled disabled:cursor-not-allowed",
         )}
       >
@@ -1015,11 +1293,14 @@ function SystemActionButton({
           />
         )}
 
-        <span className={cn(
-          "truncate transition-opacity duration-300",
-          collapsed ? "lg:opacity-0" : "lg:opacity-100",
-        )}>
-          {displayLabel}
+        <span
+          className={cn(
+            "truncate transition-opacity duration-300",
+            collapsed ? "lg:opacity-0" : "lg:opacity-100",
+          )}
+        >
+          <span className="max-lg:hidden">{displayLabel}</span>
+          <span className="hidden max-lg:inline">{compactDisplayLabel}</span>
         </span>
 
         <span
@@ -1036,8 +1317,8 @@ function SystemActionButton({
         )}
       </button>
 
-      {collapsed && hovered && liRef.current && (
-        <SidebarTooltip anchor={liRef.current} label={displayLabel} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={displayLabel} warmRef={tooltipWarmRef} />
       )}
     </li>
   );
@@ -1049,18 +1330,16 @@ function SidebarIconWithTooltip({
   label,
   tooltipWarmRef,
 }: SidebarIconWithTooltipProps) {
-  const ref = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   return (
     <div
-      ref={ref}
       className={cn(
         "relative w-fit",
         collapsed && "group/icon",
       )}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       {children}
 
@@ -1071,8 +1350,8 @@ function SidebarIconWithTooltip({
         />
       )}
 
-      {collapsed && hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {collapsed && tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
@@ -1080,8 +1359,7 @@ function SidebarIconWithTooltip({
 
 function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
   const { t } = useI18n();
-  const ref = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState(false);
+  const [tooltipAnchor, setTooltipAnchor] = useState<HTMLElement | null>(null);
 
   const toneToColor: Record<string, string> = {
     "text-success": "bg-success",
@@ -1097,14 +1375,13 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
     color = "bg-midground/20";
     label = t.status.gateway;
   } else {
-    const gw = gatewayLine(status, t);
+    const gw = gatewayDotLine(status, t);
     color = toneToColor[gw.tone] ?? "bg-muted-foreground";
     label = `${t.status.gateway} ${gw.label}`;
   }
 
   return (
     <div
-      ref={ref}
       className={cn(
         "hidden lg:flex py-3 pl-[1.625rem] transition-opacity duration-300",
         collapsed ? "lg:opacity-100" : "lg:opacity-0 lg:h-0 lg:py-0 lg:overflow-hidden",
@@ -1112,21 +1389,40 @@ function GatewayDot({ collapsed, status, tooltipWarmRef }: GatewayDotProps) {
       role="status"
       aria-label={label}
       tabIndex={collapsed ? 0 : -1}
-      onMouseEnter={collapsed ? () => setHovered(true) : undefined}
-      onMouseLeave={collapsed ? () => setHovered(false) : undefined}
-      onFocus={collapsed ? () => setHovered(true) : undefined}
-      onBlur={collapsed ? () => setHovered(false) : undefined}
+      onMouseEnter={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onMouseLeave={collapsed ? () => setTooltipAnchor(null) : undefined}
+      onFocus={collapsed ? (event) => setTooltipAnchor(event.currentTarget) : undefined}
+      onBlur={collapsed ? () => setTooltipAnchor(null) : undefined}
     >
       <span
         aria-hidden
         className={cn("h-1.5 w-1.5 rounded-full", color)}
       />
 
-      {hovered && ref.current && (
-        <SidebarTooltip anchor={ref.current} label={label} warmRef={tooltipWarmRef} />
+      {tooltipAnchor && (
+        <SidebarTooltip anchor={tooltipAnchor} label={label} warmRef={tooltipWarmRef} />
       )}
     </div>
   );
+}
+
+function gatewayDotLine(
+  status: StatusResponse,
+  t: ReturnType<typeof useI18n>["t"],
+): { label: string; tone: string } {
+  const g = t.app.gatewayStrip;
+  const byState: Record<string, { label: string; tone: string }> = {
+    running: { label: g.running, tone: "text-success" },
+    starting: { label: g.starting, tone: "text-warning" },
+    startup_failed: { label: g.failed, tone: "text-destructive" },
+    stopped: { label: g.stopped, tone: "text-muted-foreground" },
+  };
+  if (status.gateway_state && byState[status.gateway_state]) {
+    return byState[status.gateway_state];
+  }
+  return status.gateway_running
+    ? { label: g.running, tone: "text-success" }
+    : { label: g.off, tone: "text-muted-foreground" };
 }
 
 function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
@@ -1134,7 +1430,7 @@ function SidebarTooltip({ anchor, label, warmRef }: SidebarTooltipProps) {
   const sidebar = document.getElementById("app-sidebar");
   const sidebarRight = sidebar?.getBoundingClientRect().right ?? rect.right;
 
-  const isWarm = warmRef ? Date.now() - warmRef.current < 300 : false;
+  const isWarm = false;
 
   useEffect(() => {
     if (warmRef) warmRef.current = Date.now();
@@ -1180,6 +1476,15 @@ interface NavItem {
   path: string;
 }
 
+interface MobileBottomDockProps {
+  attentionCount: number;
+  items: NavItem[];
+  moreOpen: boolean;
+  onMore: () => void;
+  onNavigate: (nextTab: MobileTabKey, path: string) => void;
+  t: Translations;
+}
+
 interface SidebarIconWithTooltipProps {
   children: ReactNode;
   collapsed: boolean;
@@ -1220,6 +1525,8 @@ interface SystemActionButtonProps {
 
 interface SystemActionItem {
   action: SystemAction;
+  compactLabel: string;
+  compactRunningLabel: string;
   icon: ComponentType<{ className?: string }>;
   label: string;
   runningLabel: string;

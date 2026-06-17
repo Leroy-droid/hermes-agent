@@ -759,6 +759,26 @@ def has_blocking_approval(session_key: str) -> bool:
         return bool(_gateway_queues.get(session_key))
 
 
+def list_blocking_gateway_approvals() -> list[dict]:
+    """Return a read-only snapshot of blocking gateway approvals.
+
+    Used by dashboard status surfaces; callers must not mutate the returned
+    approval payloads.
+    """
+    with _lock:
+        rows: list[dict] = []
+        for session_key, queue in _gateway_queues.items():
+            for entry in queue:
+                rows.append(
+                    {
+                        "session_key": session_key,
+                        "kind": "approval",
+                        "payload": dict(entry.data or {}),
+                    }
+                )
+        return rows
+
+
 def submit_pending(session_key: str, approval: dict):
     """Store a pending approval request for a session."""
     with _lock:

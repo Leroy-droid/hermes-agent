@@ -26,12 +26,24 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import {
+  ChevronRight,
+  Copy,
+  HardDrive,
+  Hourglass,
+  ListChecks,
+  Mic,
+  PanelRight,
+  ShieldCheck,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { MobileChatSurface } from "@/components/MobileChatSurface";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -81,6 +93,85 @@ const TERMINAL_THEME_STATIC = {
   cursorAccent: "#0d2626",
   selectionBackground: "#f0e6d244",
 };
+
+const IPAD_SESSIONS = [
+  { device: "Mac Studio", label: "Photo organization", status: "9:41 AM", tone: "teal" },
+  { device: "MacBook Air", label: "Document cleanup", status: "Yesterday", tone: "teal" },
+  { device: "Mac mini", label: "Backup verification", status: "Yesterday", tone: "muted" },
+];
+
+const IPAD_NEEDS_INPUT = [
+  { device: "Mac Studio", label: "Organize photos by date", status: "9:41 AM" },
+  { device: "Mac mini", label: "Install updates", status: "May 12" },
+];
+
+function IpadListRow({
+  device,
+  label,
+  status,
+  tone = "muted",
+}: {
+  device: string;
+  label: string;
+  status: string;
+  tone?: "amber" | "muted" | "teal";
+}) {
+  return (
+    <button
+      type="button"
+      className={cn(
+        "hermes-ios-tap flex min-h-14 w-full items-center gap-3 rounded-2xl border px-3 text-left",
+        "bg-midground/5 hover:bg-midground/9",
+        tone === "teal"
+          ? "border-emerald-200/35 shadow-[0_0_24px_rgba(45,212,191,0.14)]"
+          : tone === "amber"
+            ? "border-warning/40 shadow-[0_0_24px_rgba(255,189,56,0.16)]"
+            : "border-midground/12",
+      )}
+    >
+      <span className="grid h-9 w-9 shrink-0 place-items-center rounded-xl border border-midground/12 bg-black/18 text-text-secondary">
+        <HardDrive className="h-4 w-4" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate text-sm font-medium leading-tight text-midground">{label}</span>
+        <span className="mt-1 block truncate text-xs text-text-secondary">{device}</span>
+      </span>
+      <span className="shrink-0 text-[0.68rem] text-text-secondary">{status}</span>
+    </button>
+  );
+}
+
+function IpadStatusCard({
+  icon: Icon,
+  label,
+  text,
+  tone,
+}: {
+  icon: LucideIcon;
+  label: string;
+  text: string;
+  tone: "amber" | "blue" | "teal";
+}) {
+  const toneClass = {
+    amber: "border-warning/35 bg-warning/8 text-warning shadow-[0_0_34px_rgba(255,189,56,0.14)]",
+    blue: "border-sky-300/30 bg-sky-300/8 text-sky-100 shadow-[0_0_34px_rgba(56,189,248,0.12)]",
+    teal: "border-emerald-300/30 bg-emerald-300/8 text-emerald-100 shadow-[0_0_34px_rgba(45,212,191,0.14)]",
+  }[tone];
+
+  return (
+    <div className={cn("rounded-[1.35rem] border p-4", toneClass)}>
+      <div className="flex items-center gap-3">
+        <span className="grid h-14 w-14 place-items-center rounded-full border border-current/25 bg-current/8">
+          <Icon className="h-6 w-6" />
+        </span>
+        <div className="min-w-0">
+          <div className="truncate text-sm font-semibold text-midground">{label}</div>
+          <p className="mt-1 text-xs leading-5 text-text-secondary">{text}</p>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 /**
  * CSS width for xterm font tiers.
@@ -159,11 +250,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const [portalRoot] = useState<HTMLElement | null>(() =>
     typeof document !== "undefined" ? document.body : null,
   );
-  const [narrow, setNarrow] = useState(() =>
-    typeof window !== "undefined"
-      ? window.matchMedia("(max-width: 1023px)").matches
-      : false,
-  );
+  const forceMobile = searchParams.get("mobile") === "1";
+  const [narrow, setNarrow] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return forceMobile || window.matchMedia("(max-width: 1023px)").matches;
+  });
 
   const { theme } = useTheme();
   const terminalBg = theme.terminalBackground ?? "#000000";
@@ -179,10 +270,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   // treat the current resume target as part of the PTY identity and rebuild the
   // terminal session when it changes.
   const resumeParam = searchParams.get("resume");
+  const decisionPanelRequested = searchParams.get("panel") === "needs-input";
+  const closeDecisionPanel = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    if (next.get("panel") !== "needs-input") return;
+    next.delete("panel");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
   // Profile-scoped chat: spawn the PTY under the globally selected
   // management profile. Changing it remounts the terminal (key below /
   // effect dep) so the user explicitly starts a fresh scoped session.
   const { profile: scopedProfile } = useProfileScope();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- changing resume/profile intentionally creates a fresh event channel.
   const channel = useMemo(() => generateChannelId(), [resumeParam, scopedProfile]);
 
   useEffect(() => {
@@ -212,11 +311,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   useEffect(() => {
     const mql = window.matchMedia("(max-width: 1023px)");
-    const sync = () => setNarrow(mql.matches);
+    const sync = () => setNarrow(forceMobile || mql.matches);
     sync();
     mql.addEventListener("change", sync);
     return () => mql.removeEventListener("change", sync);
-  }, []);
+  }, [forceMobile]);
 
   useEffect(() => {
     if (!mobilePanelOpen) return;
@@ -293,6 +392,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   };
 
   useEffect(() => {
+    // Phone-width chat uses the structured Gateway UI instead of the embedded
+    // xterm/TUI surface.  That keeps mobile from feeling like a CLI while the
+    // desktop route preserves the full terminal-style TUI experience.
+    if (narrow) return;
+
     const host = hostRef.current;
     if (!host) return;
 
@@ -724,7 +828,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         copyResetRef.current = null;
       }
     };
-  }, [channel, resumeParam, scopedProfile]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- terminalTheme changes are applied by the dedicated theme-sync effect below; do not rebuild the PTY on theme switch.
+  }, [channel, resumeParam, scopedProfile, narrow]);
 
   // When the user returns to the chat tab (isActive: false → true), the
   // terminal host just transitioned from display:none to display:flex.
@@ -797,6 +902,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
   const mobileModelToolsPortal =
     isActive &&
     narrow &&
+    !forceMobile &&
     portalRoot &&
     createPortal(
       <>
@@ -849,7 +955,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
               size="icon"
               onClick={closeMobilePanel}
               aria-label={t.app.closeModelTools}
-              className="text-text-secondary hover:text-midground"
+              className="hermes-ios-tap h-11 w-11 rounded-full text-text-secondary hover:bg-midground/10 hover:text-midground"
             >
               <X />
             </Button>
@@ -869,69 +975,148 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     );
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
-      <PluginSlot name="chat:top" />
+    <div className={cn("flex min-h-0 flex-1 flex-col", forceMobile ? "gap-0" : "gap-2")}>
+      {!forceMobile && <PluginSlot name="chat:top" />}
       {mobileModelToolsPortal}
 
-      {banner && (
+      {banner && !forceMobile && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
           {banner}
         </div>
       )}
 
-      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: terminalBg,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
-          <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+      <div className={cn("flex min-h-0 flex-1 flex-col lg:flex-row", forceMobile ? "gap-0" : "gap-2 lg:gap-3")}>
+        {narrow ? (
+          <MobileChatSurface
+            active={isActive}
+            decisionPanelRequested={decisionPanelRequested}
+            onDecisionPanelClose={closeDecisionPanel}
+            profile={scopedProfile}
+            resume={resumeParam}
           />
-
-          <Button
-            ghost
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
+        ) : (
+          <div
             className={cn(
-              "absolute z-10",
-              "normal-case tracking-normal font-normal",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-70 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
-              "lg:bottom-4 lg:right-4",
+              "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg lg:order-2",
+              "p-2 sm:p-3",
             )}
-            style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            style={{
+              backgroundColor: terminalBg,
+              boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
+            }}
           >
-            <span className="inline-flex items-center gap-1.5">
-              <Copy className="h-3 w-3 shrink-0" />
-              <span className="hidden min-[400px]:inline tracking-wide">
-                {copyState === "copied" ? "copied" : "copy last response"}
+            <div
+              ref={hostRef}
+              className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+            />
+
+            <Button
+              ghost
+              onClick={handleCopyLast}
+              title="Copy last assistant response as raw markdown"
+              aria-label="Copy last assistant response"
+              className={cn(
+                "absolute z-10",
+                "normal-case tracking-normal font-normal",
+                "rounded border border-current/30",
+                "bg-black/20 backdrop-blur-sm",
+                "opacity-70 hover:opacity-100 hover:border-current/60",
+                "transition-opacity duration-150",
+                "bottom-2 right-2 px-2 py-1 text-xs sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5",
+                "lg:bottom-4 lg:right-4",
+              )}
+              style={{ color: TERMINAL_THEME_STATIC.foreground }}
+            >
+              <span className="inline-flex items-center gap-1.5">
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
               </span>
-            </span>
-          </Button>
-        </div>
+            </Button>
+          </div>
+        )}
 
         {!narrow && (
-          <div
-            id="chat-side-panel"
-            role="complementary"
-            aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col overflow-hidden lg:h-full lg:w-80"
-          >
-            <div className="min-h-0 flex-1 overflow-hidden">
-              <ChatSidebar channel={channel} />
+          <>
+            <aside
+              aria-label="Sessions and requests"
+              className="hidden min-h-0 w-60 shrink-0 flex-col gap-4 overflow-hidden rounded-[1.45rem] border border-midground/12 bg-background-base/38 p-4 shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl lg:order-1 lg:flex xl:w-72"
+            >
+              <div>
+                <div className="mb-3 flex items-center justify-between">
+                  <Typography className="text-[1.35rem] font-semibold leading-none text-midground">
+                    Hermes
+                  </Typography>
+                  <span className="inline-flex min-h-8 items-center gap-1.5 rounded-full border border-emerald-300/30 bg-emerald-300/10 px-2.5 text-[0.68rem] text-emerald-100">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Secure tailnet
+                  </span>
+                </div>
+                <div className="flex items-center justify-between text-sm text-midground">
+                  <span>Sessions</span>
+                  <ChevronRight className="h-4 w-4 text-text-secondary" />
+                </div>
+                <div className="mt-2 space-y-2">
+                  {IPAD_SESSIONS.map((row) => (
+                    <IpadListRow key={row.label} {...row} tone={row.tone as "muted" | "teal"} />
+                  ))}
+                </div>
+              </div>
+
+              <div className="min-h-0">
+                <div className="flex items-center justify-between text-sm text-midground">
+                  <span className="inline-flex items-center gap-2">
+                    Needs Input
+                    <span className="rounded-full bg-warning/20 px-1.5 py-0.5 text-[0.68rem] text-warning">
+                      {IPAD_NEEDS_INPUT.length}
+                    </span>
+                  </span>
+                  <ChevronRight className="h-4 w-4 text-text-secondary" />
+                </div>
+                <div className="mt-2 space-y-2">
+                  {IPAD_NEEDS_INPUT.map((row) => (
+                    <IpadListRow key={row.label} {...row} tone="amber" />
+                  ))}
+                </div>
+              </div>
+            </aside>
+
+            <div
+              id="chat-side-panel"
+              role="complementary"
+              aria-label={modelToolsLabel}
+              className="flex min-h-0 shrink-0 flex-col gap-3 overflow-hidden lg:order-3 lg:h-full lg:w-72 xl:w-80"
+            >
+              <div className="grid shrink-0 gap-3">
+                <IpadStatusCard
+                  icon={ShieldCheck}
+                  label="Tailnet connected"
+                  text="Secure private network established."
+                  tone="teal"
+                />
+                <IpadStatusCard
+                  icon={Mic}
+                  label="Voice ready"
+                  text="Hermes can speak naturally when voice input is wired."
+                  tone="blue"
+                />
+                <IpadStatusCard
+                  icon={Hourglass}
+                  label="Awaiting approval"
+                  text="Review requested actions before Hermes proceeds."
+                  tone="amber"
+                />
+              </div>
+              <div className="min-h-0 flex-1 overflow-hidden rounded-[1.25rem] border border-midground/10 bg-background-base/32 backdrop-blur-xl">
+                <div className="flex items-center gap-2 border-b border-midground/10 px-3 py-2 text-xs uppercase tracking-[0.14em] text-text-secondary">
+                  <ListChecks className="h-3.5 w-3.5" />
+                  Activity
+                </div>
+                <ChatSidebar channel={channel} />
+              </div>
             </div>
-          </div>
+          </>
         )}
       </div>
       <PluginSlot name="chat:bottom" />

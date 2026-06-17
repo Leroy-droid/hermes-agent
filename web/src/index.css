@@ -118,6 +118,15 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   font-family: var(--theme-font-mono);
 }
 
+/* Unify app typography around the clean chat-bubble sans face. Keep code and
+   terminal text on the mono stack above, but route legacy display/decorative
+   classes through the same readable UI font so screens feel consistent. */
+.font-mondwest,
+.font-display,
+.text-display {
+  font-family: var(--theme-font-sans) !important;
+}
+
 /* Density: scale the shadcn spacing utilities via a multiplier. The DS
    components use `p-N` / `gap-N` / `space-*` classes which resolve against
    Tailwind's spacing scale; multiplying `--spacing` at :root scales them
@@ -126,6 +135,7 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
   --font-sans: var(--theme-font-sans);
   --font-mono: var(--theme-font-mono);
+  --font-display: var(--theme-font-sans);
 }
 
 #root {
@@ -228,6 +238,2836 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
+/* Mobile app polish -------------------------------------------------------
+   These are intentionally generic, dashboard-local utilities. They make the
+   phone UI feel closer to a native iOS app: glass surfaces, spring entrances,
+   quick press feedback, and native-feeling list scroll bounce. */
+@keyframes hermes-mobile-rise {
+  0% { opacity: 0; transform: translateY(0.75rem) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes hermes-mobile-dock-in {
+  0% { opacity: 0; transform: translateY(1rem) scale(0.985); }
+  100% { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes hermes-mobile-panel-in {
+  0% { opacity: 0; transform: translateX(-1.25rem) scale(0.985); }
+  100% { opacity: 1; transform: translateX(0) scale(1); }
+}
+
+@keyframes hermes-mobile-tab-enter-left {
+  0% { opacity: 0; transform: translateX(-1rem) scale(0.992); filter: blur(2px); }
+  100% { opacity: 1; transform: translateX(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-mobile-tab-enter-right {
+  0% { opacity: 0; transform: translateX(1rem) scale(0.992); filter: blur(2px); }
+  100% { opacity: 1; transform: translateX(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-decision-card-in {
+  0% { opacity: 0; transform: translateY(1rem) scale(0.985); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-model-card-in {
+  0% { opacity: 0; transform: translateY(1rem) scale(0.985); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-security-open {
+  0% { opacity: 0; transform: translateY(-0.35rem) scale(0.985); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-session-menu-open {
+  0% { opacity: 0; transform: translateY(-0.35rem) scale(0.985); filter: blur(2px); }
+  100% { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+
+@keyframes hermes-scroll-cue {
+  0%, 100% { opacity: 0.42; transform: translateY(-0.18rem) scaleY(0.82); }
+  50% { opacity: 0.92; transform: translateY(0.28rem) scaleY(1); }
+}
+
+@keyframes hermes-rubberband-top {
+  0% { transform: translateY(0) translateZ(0); }
+  34% { transform: translateY(0.72rem) translateZ(0); }
+  68% { transform: translateY(-0.12rem) translateZ(0); }
+  100% { transform: translateY(0) translateZ(0); }
+}
+
+@keyframes hermes-rubberband-bottom {
+  0% { transform: translateY(0) translateZ(0); }
+  34% { transform: translateY(-0.72rem) translateZ(0); }
+  68% { transform: translateY(0.12rem) translateZ(0); }
+  100% { transform: translateY(0) translateZ(0); }
+}
+
+@keyframes hermes-pinned-rubberband-left {
+  0% { transform: translateX(0) scaleX(1) translateZ(0); filter: saturate(1); }
+  36% { transform: translateX(0.78rem) scaleX(0.965) translateZ(0); filter: saturate(1.1) brightness(1.04); }
+  68% { transform: translateX(-0.14rem) scaleX(1.012) translateZ(0); filter: saturate(1.04) brightness(1.01); }
+  100% { transform: translateX(0) scaleX(1) translateZ(0); filter: saturate(1); }
+}
+
+@keyframes hermes-pinned-rubberband-right {
+  0% { transform: translateX(0) scaleX(1) translateZ(0); filter: saturate(1); }
+  36% { transform: translateX(-0.78rem) scaleX(0.965) translateZ(0); filter: saturate(1.1) brightness(1.04); }
+  68% { transform: translateX(0.14rem) scaleX(1.012) translateZ(0); filter: saturate(1.04) brightness(1.01); }
+  100% { transform: translateX(0) scaleX(1) translateZ(0); filter: saturate(1); }
+}
+
+@keyframes hermes-pinned-edge-glow-left {
+  0%, 100% { opacity: 0; transform: translateX(-0.65rem) scaleX(0.72); }
+  38% { opacity: 0.92; transform: translateX(0) scaleX(1); }
+}
+
+@keyframes hermes-pinned-edge-glow-right {
+  0%, 100% { opacity: 0; transform: translateX(0.65rem) scaleX(0.72); }
+  38% { opacity: 0.92; transform: translateX(0) scaleX(1); }
+}
+
+@media (max-width: 1023px) {
+  :root {
+    --hermes-ios-decelerate: cubic-bezier(0.22, 1, 0.36, 1);
+    --hermes-ios-standard: cubic-bezier(0.32, 0.72, 0, 1);
+    --hermes-ios-quick: cubic-bezier(0.2, 0, 0, 1);
+  }
+
+  html,
+  body,
+  #root {
+    overscroll-behavior: none;
+  }
+
+  body {
+    overflow: hidden;
+    -webkit-touch-callout: none;
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  input,
+  select,
+  textarea {
+    font-size: max(16px, 1rem);
+  }
+
+  .hermes-ios-tap {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+    transform: translateZ(0);
+    transition:
+      transform 180ms var(--hermes-ios-quick),
+      opacity 160ms ease,
+      background-color 180ms ease,
+      border-color 180ms ease,
+      box-shadow 220ms ease;
+  }
+
+  .hermes-ios-tap:active {
+    transform: scale(0.975) translateZ(0);
+  }
+
+  .hermes-ios-surface {
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.105), transparent 16rem),
+      linear-gradient(180deg, rgba(255, 230, 203, 0.14), rgba(255, 230, 203, 0.04)),
+      color-mix(in srgb, var(--background-base) 66%, transparent);
+    background-blend-mode: screen, normal, normal;
+    border: 1px solid color-mix(in srgb, var(--midground-base) 22%, transparent);
+    box-shadow:
+      0 18px 54px rgba(0, 0, 0, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.13),
+      inset 0 -1px 0 rgba(4, 28, 28, 0.26),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.035);
+    backdrop-filter: blur(28px) saturate(176%) contrast(1.04);
+    -webkit-backdrop-filter: blur(28px) saturate(176%) contrast(1.04);
+  }
+
+  .hermes-mobile-card {
+    animation: hermes-mobile-rise 360ms var(--hermes-ios-decelerate) both;
+  }
+
+  .hermes-mobile-composer {
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px));
+  }
+
+  .hermes-mobile-chat-shell {
+    --hermes-mobile-bg: #fbfaf7;
+    --hermes-mobile-text: #151716;
+    --hermes-mobile-muted: #777d78;
+    --hermes-mobile-line: rgba(30, 40, 35, 0.09);
+    --hermes-mobile-assistant: #fffdfa;
+    --hermes-mobile-user: #eaf4ec;
+    --hermes-mobile-panel: #fffffc;
+    --hermes-mobile-soft: #eff6f0;
+    --hermes-mobile-field: #ffffff;
+    --hermes-mobile-green: #5ca66f;
+    --hermes-mobile-blue: #386aa6;
+    --hermes-mobile-shadow: 0 16px 42px rgba(44, 58, 48, 0.14);
+    color: var(--hermes-mobile-text);
+    background: var(--hermes-mobile-bg) !important;
+    border-color: var(--hermes-mobile-line) !important;
+    border-radius: 1.8rem !important;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04) !important;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", Inter, var(--theme-font-sans);
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .hermes-mobile-chat-shell {
+      --hermes-mobile-bg: #111412;
+      --hermes-mobile-text: #f4f6f3;
+      --hermes-mobile-muted: #9aa39b;
+      --hermes-mobile-line: rgba(255, 255, 255, 0.09);
+      --hermes-mobile-assistant: #1b1f1c;
+      --hermes-mobile-user: #22382a;
+      --hermes-mobile-panel: #191d1a;
+      --hermes-mobile-soft: #1f2b22;
+      --hermes-mobile-field: #191d1a;
+      --hermes-mobile-green: #69b77d;
+      --hermes-mobile-blue: #8bb9ef;
+      --hermes-mobile-shadow: 0 16px 50px rgba(0, 0, 0, 0.42);
+    }
+  }
+
+  .hermes-mobile-chat-shell .hermes-mythic-art {
+    display: none;
+  }
+
+  .hermes-mobile-chat-header {
+    min-height: 4.25rem;
+    border-color: var(--hermes-mobile-line) !important;
+    background: color-mix(in srgb, var(--hermes-mobile-bg) 86%, transparent) !important;
+    color: var(--hermes-mobile-text) !important;
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+  }
+
+  .hermes-mobile-chat-header .text-midground,
+  .hermes-mobile-chat-shell .text-midground,
+  .hermes-mobile-chat-shell .text-foreground {
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-chat-header .text-text-secondary,
+  .hermes-mobile-chat-shell .text-text-secondary,
+  .hermes-mobile-chat-status {
+    color: var(--hermes-mobile-muted) !important;
+  }
+
+  .hermes-mobile-chat-header .text-emerald-300,
+  .hermes-mobile-chat-shell .text-emerald-100,
+  .hermes-mobile-chat-shell .text-emerald-50 {
+    color: var(--hermes-mobile-green) !important;
+  }
+
+  .hermes-mobile-chat-shell .bg-emerald-300,
+  .hermes-mobile-chat-shell .bg-emerald-300\/16,
+  .hermes-mobile-chat-shell .bg-emerald-300\/10 {
+    background-color: var(--hermes-mobile-green) !important;
+  }
+
+  .hermes-mobile-model-button {
+    max-width: 8.4rem !important;
+    border-color: var(--hermes-mobile-line) !important;
+    background: color-mix(in srgb, var(--hermes-mobile-assistant) 78%, transparent) !important;
+    color: var(--hermes-mobile-muted) !important;
+    box-shadow: none !important;
+  }
+
+  .hermes-mobile-model-button > span:first-child,
+  .hermes-mobile-menu-button,
+  .hermes-mobile-popover-menu .menuicon {
+    border-color: var(--hermes-mobile-line) !important;
+    background: color-mix(in srgb, var(--hermes-mobile-assistant) 84%, transparent) !important;
+  }
+
+  .hermes-mobile-menu-button {
+    width: 2.45rem !important;
+    height: 2.45rem !important;
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-popover-menu {
+    top: 3.2rem !important;
+    width: min(18rem, calc(100vw - 2rem)) !important;
+    border-radius: 1.35rem !important;
+    border-color: var(--hermes-mobile-line) !important;
+    background: var(--hermes-mobile-panel) !important;
+    color: var(--hermes-mobile-text) !important;
+    box-shadow: var(--hermes-mobile-shadow) !important;
+  }
+
+  .hermes-mobile-popover-menu::before {
+    content: '';
+    position: absolute;
+    top: -0.38rem;
+    right: 1.2rem;
+    width: 0.85rem;
+    height: 0.85rem;
+    transform: rotate(45deg);
+    background: var(--hermes-mobile-panel);
+    border-left: 1px solid var(--hermes-mobile-line);
+    border-top: 1px solid var(--hermes-mobile-line);
+  }
+
+  .hermes-mobile-popover-menu button {
+    color: var(--hermes-mobile-text) !important;
+    border-radius: 0.95rem !important;
+  }
+
+  .hermes-mobile-popover-menu button:hover,
+  .hermes-mobile-popover-menu button:focus-visible {
+    background: var(--hermes-mobile-soft) !important;
+  }
+
+  .hermes-mobile-chat-scroll {
+    background: var(--hermes-mobile-bg);
+    color: var(--hermes-mobile-text);
+    padding: 1.15rem 1rem 1.3rem !important;
+  }
+
+  .hermes-mobile-bubble {
+    border-color: var(--hermes-mobile-line) !important;
+    border-radius: 1.1rem !important;
+    color: var(--hermes-mobile-text) !important;
+    box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .hermes-mobile-bubble--assistant {
+    background: var(--hermes-mobile-assistant) !important;
+  }
+
+  .hermes-mobile-bubble--user {
+    background: var(--hermes-mobile-user) !important;
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-bubble--handoff {
+    background: color-mix(in srgb, var(--hermes-mobile-user) 72%, var(--hermes-mobile-assistant)) !important;
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-bubble--system {
+    background: color-mix(in srgb, #ffbd38 12%, var(--hermes-mobile-assistant)) !important;
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-agent-card {
+    border-radius: 1.6rem !important;
+    border-color: var(--hermes-mobile-line) !important;
+    background: var(--hermes-mobile-panel) !important;
+    color: var(--hermes-mobile-text) !important;
+    box-shadow: var(--hermes-mobile-shadow) !important;
+  }
+
+  .hermes-mobile-agent-card button[aria-expanded] {
+    border-radius: 1rem;
+  }
+
+  .hermes-mobile-agent-card .rounded-full,
+  .hermes-mobile-agent-card .rounded-\[0\.85rem\] {
+    border-color: var(--hermes-mobile-line) !important;
+    background: var(--hermes-mobile-soft) !important;
+    color: var(--hermes-mobile-green) !important;
+  }
+
+  .hermes-mobile-composer {
+    border-color: var(--hermes-mobile-line) !important;
+    background: color-mix(in srgb, var(--hermes-mobile-bg) 78%, transparent) !important;
+    backdrop-filter: blur(18px) saturate(150%);
+    -webkit-backdrop-filter: blur(18px) saturate(150%);
+  }
+
+  .hermes-mobile-composer-field {
+    border-color: var(--hermes-mobile-line) !important;
+    background: var(--hermes-mobile-field) !important;
+    box-shadow: 0 8px 28px rgba(44, 58, 48, 0.1) !important;
+  }
+
+  .hermes-mobile-composer textarea {
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mobile-composer textarea::placeholder {
+    color: var(--hermes-mobile-muted) !important;
+  }
+
+  .hermes-mobile-composer button {
+    border-color: var(--hermes-mobile-line) !important;
+    box-shadow: none !important;
+  }
+
+  .hermes-mobile-composer button[aria-label="Voice ready"],
+  .hermes-mobile-composer button[aria-label="Send message"] {
+    background: var(--hermes-mobile-green) !important;
+    color: #fff !important;
+  }
+
+  .hermes-mobile-composer button[aria-label="Upload files"] {
+    background: var(--hermes-mobile-field) !important;
+    color: var(--hermes-mobile-text) !important;
+  }
+
+  .hermes-mythic-frame > :not(.hermes-mythic-art) {
+    position: relative;
+    z-index: 1;
+  }
+
+  .hermes-mythic-art {
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    overflow: hidden;
+    border-radius: inherit;
+    pointer-events: none;
+  }
+
+  .hermes-mythic-art::before {
+    content: '';
+    position: absolute;
+    inset: -9%;
+    background-image: url('/icons/hermes-old-art-bg.jpg');
+    background-repeat: no-repeat;
+    background-size: auto 142%;
+    opacity: 0.19;
+    filter: sepia(0.84) saturate(1.45) hue-rotate(112deg) contrast(1.12)
+      brightness(0.72);
+    mix-blend-mode: screen;
+  }
+
+  .hermes-mythic-art::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 28% 22%, rgba(255, 230, 203, 0.13), transparent 16rem),
+      radial-gradient(circle at 72% 30%, rgba(45, 212, 191, 0.12), transparent 14rem),
+      linear-gradient(180deg, rgba(4, 28, 28, 0.08), rgba(4, 28, 28, 0.72) 72%);
+  }
+
+  .hermes-mythic-art--chat::before {
+    background-position: 72% 38%;
+    opacity: 0.27;
+  }
+
+  .hermes-mythic-art--sessions::before {
+    background-position: 72% 38%;
+    background-size: auto 142%;
+    opacity: 0.27;
+    transform: scaleX(-1);
+  }
+
+  .hermes-mythic-art--app::before {
+    background-position: 58% 42%;
+    opacity: 0.16;
+    transform: scale(1.06);
+  }
+
+  .hermes-mythic-art--menu::before {
+    background-position: 22% 36%;
+    opacity: 0.18;
+    transform: scaleX(-1) scale(1.08);
+  }
+
+  .hermes-mythic-art--more::before {
+    background-position: 44% 34%;
+    background-size: auto 128%;
+    opacity: 0.21;
+    transform: scale(1.06);
+  }
+
+  .hermes-mythic-art--more::after {
+    background:
+      radial-gradient(circle at 22% 12%, rgba(255, 230, 203, 0.11), transparent 14rem),
+      radial-gradient(circle at 70% 32%, rgba(45, 212, 191, 0.09), transparent 15rem),
+      linear-gradient(180deg, rgba(4, 28, 28, 0.1), rgba(4, 28, 28, 0.58) 76%);
+  }
+
+  .hermes-mobile-page-frame {
+    position: relative;
+    isolation: isolate;
+    min-height: calc(100dvh - 5.25rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 5.25rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 1.65rem;
+    padding: 0.85rem;
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.11), rgba(255, 230, 203, 0.035)),
+      color-mix(in srgb, var(--background-base) 72%, transparent);
+    border: 1px solid color-mix(in srgb, var(--midground-base) 18%, transparent);
+    box-shadow:
+      0 18px 54px rgba(0, 0, 0, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(24px) saturate(150%);
+    -webkit-backdrop-filter: blur(24px) saturate(150%);
+  }
+
+  .hermes-mobile-page-frame::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background-image: url('/icons/hermes-old-art-bg.jpg');
+    background-repeat: no-repeat;
+    background-position: 58% 42%;
+    background-size: auto 132%;
+    opacity: 0.15;
+    filter: sepia(0.84) saturate(1.45) hue-rotate(112deg) contrast(1.12)
+      brightness(0.72);
+    mix-blend-mode: screen;
+  }
+
+  .hermes-mobile-page-frame::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: 0;
+    border-radius: inherit;
+    pointer-events: none;
+    background:
+      radial-gradient(circle at 24% 18%, rgba(255, 230, 203, 0.12), transparent 15rem),
+      linear-gradient(180deg, rgba(4, 28, 28, 0.08), rgba(4, 28, 28, 0.66) 76%);
+  }
+
+  .hermes-mobile-page-frame > * {
+    position: relative;
+    z-index: 1;
+  }
+
+  .hermes-mobile-page-frame > .contents {
+    display: contents;
+  }
+
+  .hermes-security-sheet {
+    transform-origin: top center;
+    max-height: calc(100% - 1rem);
+    overflow-y: auto !important;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+    animation: hermes-security-open 260ms var(--hermes-ios-standard) both;
+  }
+
+  .hermes-security-sheet::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hermes-security-backdrop {
+    position: absolute !important;
+    inset-inline: 0 !important;
+    top: 4rem !important;
+    bottom: 5.55rem !important;
+    z-index: 30 !important;
+    background:
+      radial-gradient(circle at 50% 18%, rgba(255, 230, 203, 0.055), transparent 16rem),
+      color-mix(in srgb, var(--background-base) 6%, transparent);
+    backdrop-filter: blur(3px) saturate(130%);
+    -webkit-backdrop-filter: blur(3px) saturate(130%);
+  }
+
+  .hermes-security-sheet.hermes-ios-surface {
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.07), rgba(255, 230, 203, 0.026)),
+      color-mix(in srgb, var(--background-base) 30%, transparent);
+    border-color: color-mix(in srgb, var(--midground-base) 18%, transparent);
+    box-shadow:
+      0 22px 70px rgba(0, 0, 0, 0.42),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08),
+      inset 0 0 0 1px rgba(255, 255, 255, 0.026);
+    backdrop-filter: blur(28px) saturate(170%) contrast(1.04);
+    -webkit-backdrop-filter: blur(28px) saturate(170%) contrast(1.04);
+  }
+
+  .hermes-security-info-block,
+  .hermes-security-stat-row {
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.06), rgba(255, 230, 203, 0.022)),
+      color-mix(in srgb, var(--background-base) 34%, transparent);
+    border-color: color-mix(in srgb, var(--midground-base) 16%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.052),
+      inset 0 0 0 999px rgba(255, 255, 255, 0.012);
+    backdrop-filter: blur(24px) saturate(165%) contrast(1.04);
+    -webkit-backdrop-filter: blur(24px) saturate(165%) contrast(1.04);
+  }
+
+  .hermes-decision-card {
+    transform-origin: bottom center;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+    animation: hermes-decision-card-in 320ms var(--hermes-ios-decelerate) both;
+  }
+
+  .hermes-decision-card details,
+  .hermes-decision-card article,
+  .hermes-decision-card pre,
+  .hermes-decision-card p.rounded-\[1rem\],
+  .hermes-decision-card div.rounded-2xl {
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.06), rgba(255, 230, 203, 0.022)),
+      color-mix(in srgb, var(--background-base) 30%, transparent) !important;
+    border-color: color-mix(in srgb, var(--midground-base) 16%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.052),
+      inset 0 0 0 999px rgba(255, 255, 255, 0.012),
+      0 10px 30px rgba(0, 0, 0, 0.14) !important;
+    backdrop-filter: blur(24px) saturate(165%) contrast(1.04);
+    -webkit-backdrop-filter: blur(24px) saturate(165%) contrast(1.04);
+  }
+
+  .hermes-model-card {
+    transform-origin: bottom center;
+    animation: hermes-model-card-in 300ms var(--hermes-ios-decelerate) both;
+  }
+
+  .hermes-effort-strip {
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+  }
+
+  .hermes-effort-strip::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hermes-session-menu {
+    transform-origin: top right;
+    animation: hermes-session-menu-open 220ms var(--hermes-ios-standard) both;
+  }
+
+  .hermes-mobile-scroll {
+    position: relative;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hermes-mobile-sessions-shell {
+    height: calc(100dvh - 6.2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+    max-height: calc(100dvh - 6.2rem - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px));
+  }
+
+  .hermes-ios-session-list {
+    position: relative;
+    z-index: 1;
+    flex: 1 1 auto;
+    min-height: 13rem;
+    max-height: none;
+    overflow-y: auto;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    mask-image: none;
+    -webkit-mask-image: none;
+    margin-top: 0;
+    padding-top: 0;
+    padding-bottom: 6.3rem;
+    transform: none;
+    transition:
+      filter 220ms ease,
+      opacity 180ms ease;
+  }
+
+  .hermes-session-pinned-glass {
+    position: relative;
+    z-index: 2;
+    isolation: isolate;
+    flex: 0 0 auto;
+    min-height: calc(4.35rem + 1.1rem);
+    overflow: hidden;
+    margin-bottom: 0.7rem;
+    padding: 0.55rem !important;
+    border-radius: 1.18rem;
+    background:
+      linear-gradient(180deg, rgba(45, 212, 191, 0.12), rgba(45, 212, 191, 0.045)),
+      color-mix(in srgb, var(--background-base) 48%, transparent);
+    border: 1px solid rgba(153, 246, 228, 0.2);
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.055),
+      0 10px 26px rgba(0, 0, 0, 0.16);
+    backdrop-filter: blur(18px) saturate(145%);
+    -webkit-backdrop-filter: blur(18px) saturate(145%);
+    transition:
+      transform 320ms var(--hermes-ios-decelerate),
+      filter 220ms ease;
+  }
+
+  .hermes-session-pinned-glass > div {
+    position: relative;
+    z-index: 2;
+  }
+
+  .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-session-pinned-glass {
+    filter: drop-shadow(0 0.8rem 0.9rem rgba(4, 28, 28, 0.18));
+  }
+
+  .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-ios-session-list {
+    filter: saturate(1.04) contrast(1.02);
+  }
+
+  .hermes-ios-session-list[data-scrolled="true"] {
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+
+  .hermes-ios-session-list[data-rubberband="top"] {
+    animation: hermes-rubberband-top 460ms var(--hermes-ios-decelerate) both;
+  }
+
+  .hermes-ios-session-list[data-rubberband="bottom"] {
+    animation: hermes-rubberband-bottom 460ms var(--hermes-ios-decelerate) both;
+  }
+
+  .hermes-mobile-session-pinned--teal {
+    background: rgba(255, 230, 203, 0.045) !important;
+    border-color: rgba(153, 246, 228, 0.18) !important;
+    box-shadow: none !important;
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+
+  .hermes-session-pinned-glass button {
+    background: rgba(255, 230, 203, 0.045) !important;
+    border-color: rgba(153, 246, 228, 0.18) !important;
+    box-shadow: none !important;
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+
+  .hermes-ios-session-list > div {
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.038), rgba(255, 230, 203, 0.012)),
+      color-mix(in srgb, var(--background-base) 58%, transparent) !important;
+    border-color: rgba(153, 246, 228, 0.18) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      inset 0 0 0 999px rgba(0, 0, 0, 0.06),
+      0 8px 22px rgba(0, 0, 0, 0.14) !important;
+    backdrop-filter: blur(18px) saturate(135%) contrast(1.02) !important;
+    -webkit-backdrop-filter: blur(18px) saturate(135%) contrast(1.02) !important;
+  }
+
+  .hermes-session-search-glass {
+    position: relative !important;
+    inset-inline: auto;
+    bottom: auto !important;
+    z-index: 5;
+    margin-top: 0 !important;
+    padding-bottom: max(0.75rem, env(safe-area-inset-bottom, 0px)) !important;
+    background:
+      linear-gradient(180deg, transparent 0%, rgba(255, 230, 203, 0.035) 34%, transparent 100%),
+      color-mix(in srgb, var(--background-base) 12%, transparent) !important;
+    border-top-color: color-mix(in srgb, var(--midground-base) 11%, transparent) !important;
+    box-shadow:
+      0 -1.2rem 2.4rem rgba(4, 28, 28, 0.18),
+      inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    backdrop-filter: blur(24px) saturate(185%) contrast(1.05);
+    -webkit-backdrop-filter: blur(24px) saturate(185%) contrast(1.05);
+  }
+
+  .hermes-session-search-glass > div {
+    background:
+      radial-gradient(circle at 18% 0%, rgba(255, 255, 255, 0.12), transparent 9rem),
+      linear-gradient(180deg, rgba(255, 230, 203, 0.09), rgba(255, 230, 203, 0.024)),
+      color-mix(in srgb, var(--background-base) 16%, transparent) !important;
+    backdrop-filter: blur(24px) saturate(190%) contrast(1.08);
+    -webkit-backdrop-filter: blur(24px) saturate(190%) contrast(1.08);
+  }
+
+  .hermes-ios-session-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hermes-ios-session-list > :last-child {
+    border-bottom: 0;
+  }
+
+  .hermes-mobile-session-row--teal,
+  .hermes-mobile-session-row--sky,
+  .hermes-mobile-session-row--gold,
+  .hermes-mobile-session-row--neutral {
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.038), rgba(255, 230, 203, 0.012)),
+      color-mix(in srgb, var(--background-base) 58%, transparent) !important;
+    backdrop-filter: blur(26px) saturate(150%) contrast(1.03);
+    -webkit-backdrop-filter: blur(26px) saturate(150%) contrast(1.03);
+  }
+
+  .hermes-mobile-session-row--teal {
+    border-color: color-mix(in srgb, rgb(167, 243, 208) 18%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      inset 0 0 0 999px rgba(0, 0, 0, 0.06),
+      0 0 16px rgba(45, 212, 191, 0.04),
+      0 10px 30px rgba(0, 0, 0, 0.18) !important;
+  }
+
+  .hermes-mobile-session-row--sky {
+    border-color: color-mix(in srgb, rgb(186, 230, 253) 18%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      inset 0 0 0 999px rgba(0, 0, 0, 0.06),
+      0 0 16px rgba(56, 189, 248, 0.04),
+      0 10px 30px rgba(0, 0, 0, 0.18) !important;
+  }
+
+  .hermes-mobile-session-row--gold {
+    border-color: color-mix(in srgb, rgb(255, 210, 138) 20%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      inset 0 0 0 999px rgba(0, 0, 0, 0.06),
+      0 0 16px rgba(255, 210, 138, 0.04),
+      0 10px 30px rgba(0, 0, 0, 0.18) !important;
+  }
+
+  .hermes-mobile-session-row--neutral {
+    border-color: color-mix(in srgb, var(--midground-base) 16%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.045),
+      inset 0 0 0 999px rgba(0, 0, 0, 0.06),
+      0 10px 30px rgba(0, 0, 0, 0.18) !important;
+  }
+
+  .hermes-mobile-page-frame::-webkit-scrollbar,
+  .hermes-mobile-nav-scroll-frame nav::-webkit-scrollbar {
+    display: none;
+  }
+
+  .hermes-mobile-page-frame,
+  .hermes-mobile-nav-scroll-frame nav {
+    scrollbar-width: none;
+  }
+
+  .hermes-mobile-nav-scroll-frame {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .hermes-mobile-nav-scroll-frame nav {
+    padding-bottom: 4.5rem;
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hermes-sidebar-system-actions {
+    position: relative;
+    z-index: 6 !important;
+    isolation: isolate;
+    overflow: hidden;
+    margin-top: -1.35rem !important;
+    background:
+      linear-gradient(180deg, rgba(255, 230, 203, 0.07), rgba(255, 230, 203, 0.026)),
+      color-mix(in srgb, var(--background-base) 30%, transparent) !important;
+    border-color: color-mix(in srgb, var(--midground-base) 18%, transparent) !important;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.06),
+      inset 0 0 0 999px rgba(255, 255, 255, 0.018),
+      0 10px 30px rgba(0, 0, 0, 0.16) !important;
+    backdrop-filter: blur(28px) saturate(170%) contrast(1.04) !important;
+    -webkit-backdrop-filter: blur(28px) saturate(170%) contrast(1.04) !important;
+  }
+
+  .hermes-sidebar-system-actions::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    border-radius: inherit;
+    pointer-events: none;
+    background:
+      linear-gradient(115deg, rgba(255, 255, 255, 0.16), transparent 28%),
+      linear-gradient(180deg, rgba(255, 230, 203, 0.045), transparent 54%);
+    mix-blend-mode: screen;
+  }
+
+  .hermes-mobile-nav-scroll-frame::after {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    bottom: 0;
+    z-index: 4;
+    height: 3.25rem;
+    pointer-events: none;
+    background: linear-gradient(to bottom, transparent, rgba(255, 230, 203, 0.045));
+    backdrop-filter: blur(9px) saturate(160%) contrast(1.04);
+    -webkit-backdrop-filter: blur(9px) saturate(160%) contrast(1.04);
+    mask-image: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.42) 62%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, transparent, rgba(0, 0, 0, 0.42) 62%, transparent 100%);
+    opacity: 0;
+    transition: opacity 240ms ease;
+  }
+
+  .hermes-mobile-nav-scroll-frame::before {
+    content: '';
+    position: absolute;
+    right: 0.92rem;
+    bottom: 1.03rem;
+    z-index: 5;
+    width: 0.22rem;
+    height: 1.65rem;
+    border-radius: 9999px;
+    pointer-events: none;
+    background:
+      linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(255, 230, 203, 0.34)),
+      color-mix(in srgb, var(--midground-base) 34%, transparent);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.2),
+      0 0 1rem rgba(255, 230, 203, 0.28),
+      0 0 1.35rem rgba(45, 212, 191, 0.14);
+    opacity: 0;
+    transform: translateY(0.15rem) scaleY(0.75);
+    animation: none;
+    transition:
+      opacity 220ms ease,
+      transform 260ms var(--hermes-ios-standard);
+  }
+
+  .hermes-mobile-nav-scroll-frame[data-nav-scrolled="true"]::after {
+    opacity: 0.5;
+  }
+
+  .hermes-mobile-nav-scroll-frame[data-nav-scrolled="true"]::before {
+    opacity: 0.86;
+    transform: translateY(0) scaleY(1);
+    animation: hermes-scroll-cue 1.85s var(--hermes-ios-standard) infinite;
+  }
+
+  [data-chat-active="true"] {
+    overscroll-behavior-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .hermes-mobile-panel.hermes-ios-surface {
+    background:
+      radial-gradient(circle at 18% 4%, rgba(255, 255, 255, 0.06), transparent 16rem),
+      linear-gradient(180deg, rgba(255, 230, 203, 0.075), rgba(255, 230, 203, 0.018)),
+      color-mix(in srgb, var(--background-base) 28%, transparent) !important;
+    border-color: color-mix(in srgb, var(--midground-base) 18%, transparent) !important;
+    box-shadow:
+      0 24px 70px rgba(0, 0, 0, 0.52),
+      18px 0 46px rgba(0, 0, 0, 0.22),
+      inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    backdrop-filter: blur(24px) saturate(155%) !important;
+    -webkit-backdrop-filter: blur(24px) saturate(155%) !important;
+  }
+
+  .hermes-mobile-tab-enter-left-a,
+  .hermes-mobile-tab-enter-left-b {
+    animation: hermes-mobile-tab-enter-left 300ms var(--hermes-ios-decelerate) both;
+    will-change: transform, opacity, filter;
+  }
+
+  .hermes-mobile-tab-enter-right-a,
+  .hermes-mobile-tab-enter-right-b {
+    animation: hermes-mobile-tab-enter-right 300ms var(--hermes-ios-decelerate) both;
+    will-change: transform, opacity, filter;
+  }
+
+  .hermes-mobile-tab-enter-left-a .hermes-mobile-card,
+  .hermes-mobile-tab-enter-left-b .hermes-mobile-card {
+    animation: hermes-mobile-tab-enter-left 300ms var(--hermes-ios-decelerate) both;
+    will-change: transform, opacity, filter;
+  }
+
+  .hermes-mobile-tab-enter-right-a .hermes-mobile-card,
+  .hermes-mobile-tab-enter-right-b .hermes-mobile-card {
+    animation: hermes-mobile-tab-enter-right 300ms var(--hermes-ios-decelerate) both;
+    will-change: transform, opacity, filter;
+  }
+
+  .hermes-mobile-dock {
+    animation: hermes-mobile-dock-in 380ms var(--hermes-ios-decelerate) both;
+    padding-bottom: max(0.5rem, env(safe-area-inset-bottom));
+  }
+
+  textarea,
+  [contenteditable="true"] {
+    caret-color: #34d399;
+  }
+
+  [aria-busy="true"] {
+    cursor: progress;
+  }
+
+  [data-mobile-surface-route="true"] header[role="banner"] {
+    display: none;
+  }
+}
+
+@media (min-width: 1024px) and (max-width: 1366px) {
+  [data-chat-route="true"] #app-sidebar,
+  [data-chat-route="true"] header[role="banner"] {
+    display: none;
+  }
+
+  [data-chat-route="true"] {
+    background:
+      radial-gradient(circle at 52% 22%, rgba(45, 212, 191, 0.13), transparent 32rem),
+      radial-gradient(circle at 92% 88%, rgba(255, 189, 56, 0.08), transparent 24rem),
+      #020f0f;
+  }
+
+  .hermes-ios-tap {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+    transform: translateZ(0);
+    transition:
+      transform 260ms cubic-bezier(0.2, 1.2, 0.34, 1),
+      opacity 160ms ease,
+      background-color 200ms ease,
+      border-color 200ms ease,
+      box-shadow 260ms ease;
+  }
+
+  .hermes-ios-tap:active {
+    transform: scale(0.97) translateZ(0);
+  }
+}
+
+@media (max-width: 1366px) and (prefers-reduced-motion: reduce) {
+  .hermes-ios-tap,
+  .hermes-mobile-card,
+  .hermes-security-sheet,
+  .hermes-decision-card,
+  .hermes-model-card,
+  .hermes-session-menu,
+  .hermes-mobile-nav-scroll-frame::before,
+  .hermes-mobile-panel[data-open="true"],
+  .hermes-mobile-dock {
+    animation: none;
+    transition-duration: 80ms;
+  }
+
+  .hermes-ios-tap:active {
+    transform: none;
+  }
+}
+
+/* Forced mobile preview: `/chat?mobile=1` can be opened from Desktop/iPad-sized
+   viewports, so the core Hermes Mobile language must not be trapped inside the
+   phone-width media query above. Keep this focused on the live chat shell. */
+.hermes-mobile-chat-shell,
+.hermes-mobile-sessions-shell {
+  --hermes-mobile-bg: #fbfaf7;
+  --hermes-mobile-text: #151716;
+  --hermes-mobile-muted: #777d78;
+  --hermes-mobile-line: rgba(30, 40, 35, 0.09);
+  --hermes-mobile-assistant: #fffdfa;
+  --hermes-mobile-user: #eaf4ec;
+  --hermes-mobile-panel: #fffffc;
+  --hermes-mobile-field: #ffffff;
+  --hermes-mobile-soft: #eff6f0;
+  --hermes-mobile-green: #5ca66f;
+  --hermes-mobile-shadow: 0 16px 42px rgba(44, 58, 48, 0.14);
+  color: var(--hermes-mobile-text);
+  background: var(--hermes-mobile-bg) !important;
+  border-color: var(--hermes-mobile-line) !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.04) !important;
+}
+
+@media (prefers-color-scheme: dark) {
+  .hermes-mobile-chat-shell,
+  .hermes-mobile-sessions-shell {
+    --hermes-mobile-bg: #111412;
+    --hermes-mobile-text: #f4f6f3;
+    --hermes-mobile-muted: #9aa39b;
+    --hermes-mobile-line: rgba(255, 255, 255, 0.09);
+    --hermes-mobile-assistant: #1b1f1c;
+    --hermes-mobile-user: #22382a;
+    --hermes-mobile-panel: #191d1a;
+    --hermes-mobile-field: #191d1a;
+    --hermes-mobile-soft: #1f2b22;
+    --hermes-mobile-green: #69b77d;
+    --hermes-mobile-shadow: 0 16px 50px rgba(0, 0, 0, 0.42);
+  }
+}
+
+.hermes-mobile-chat-shell .hermes-mythic-art,
+.hermes-mobile-sessions-shell .hermes-mythic-art {
+  display: none !important;
+}
+
+.hermes-mobile-chat-header,
+.hermes-mobile-sessions-header,
+.hermes-mobile-composer {
+  border-color: var(--hermes-mobile-line) !important;
+  background: color-mix(in srgb, var(--hermes-mobile-bg) 86%, transparent) !important;
+}
+
+.hermes-mobile-chat-shell .text-midground,
+.hermes-mobile-sessions-shell .text-midground,
+.hermes-mobile-chat-shell .text-foreground,
+.hermes-mobile-sessions-shell .text-foreground,
+.hermes-mobile-bubble {
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-chat-shell .text-text-secondary,
+.hermes-mobile-sessions-shell .text-text-secondary,
+.hermes-mobile-chat-status {
+  color: var(--hermes-mobile-muted) !important;
+}
+
+.hermes-mobile-chat-scroll,
+.hermes-mobile-sessions-scroll {
+  background: var(--hermes-mobile-bg) !important;
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-bubble {
+  border-color: var(--hermes-mobile-line) !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-bubble--assistant {
+  background: var(--hermes-mobile-assistant) !important;
+}
+
+.hermes-mobile-bubble--user {
+  background: var(--hermes-mobile-user) !important;
+}
+
+.hermes-mobile-bubble--handoff {
+  background: color-mix(in srgb, var(--hermes-mobile-user) 72%, var(--hermes-mobile-assistant)) !important;
+}
+
+.hermes-mobile-model-button,
+.hermes-mobile-menu-button,
+.hermes-mobile-composer-field,
+.hermes-mobile-composer button[aria-label="Upload files"] {
+  border-color: var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-popover-menu,
+.hermes-mobile-agent-card {
+  border-color: var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-panel) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: var(--hermes-mobile-shadow) !important;
+}
+
+.hermes-mobile-composer textarea {
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-composer textarea::placeholder {
+  color: var(--hermes-mobile-muted) !important;
+}
+
+.hermes-mobile-composer button[aria-label="Voice ready"],
+.hermes-mobile-composer button[aria-label="Send message"] {
+  background: var(--hermes-mobile-green) !important;
+  color: #fff !important;
+}
+
+[data-force-mobile-surface="true"] {
+  background: #111820 !important;
+}
+
+[data-force-mobile-surface="true"] > div[aria-hidden] {
+  display: none !important;
+}
+
+[data-force-mobile-surface="true"] [role="complementary"],
+[data-force-mobile-surface="true"] aside,
+[data-force-mobile-surface="true"] .theme-default-filler {
+  display: none !important;
+}
+
+[data-force-mobile-surface="true"] main,
+[data-force-mobile-surface="true"] [data-chat-active="true"] {
+  background: transparent !important;
+}
+
+[data-force-mobile-surface="true"] .hermes-mobile-chat-shell {
+  min-height: 100dvh !important;
+  border-radius: 2rem !important;
+}
+
+/* Hermes Mobile design reset: source of truth is
+   .hermes/mockups/hermes-mobile-menu-quick.html. Keep this route free of the
+   old dashboard/mythic skin. */
+.hermes-mobile-app {
+  --hermes-mobile-composer-height: 5.4rem;
+  --hermes-mobile-keyboard-inset: 0px;
+  width: min(100%, 430px);
+  min-height: 100dvh;
+  margin: 0 auto;
+  border-radius: 2.65rem;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-bg) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.035), 0 24px 70px rgba(0, 0, 0, 0.28) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, sans-serif;
+}
+
+[data-force-mobile-surface="true"] .hermes-mobile-app {
+  flex: 0 1 430px !important;
+  width: min(100%, 430px) !important;
+  max-width: 430px !important;
+  min-height: 100dvh !important;
+  border-radius: 2.65rem !important;
+}
+
+.hermes-mobile-app-header {
+  height: calc(3.5rem + env(safe-area-inset-top, 0px));
+  padding-top: env(safe-area-inset-top, 0px);
+  border-bottom: 1px solid var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-bg) !important;
+  color: var(--hermes-mobile-text) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-title-button,
+.hermes-mobile-back-button,
+.hermes-mobile-menu-button {
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-menu-button {
+  border-color: var(--hermes-mobile-line) !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 86%, transparent) !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-shield {
+  background: var(--hermes-mobile-green) !important;
+  color: #fff !important;
+  border-radius: 9999px !important;
+}
+
+.hermes-mobile-app-chat {
+  background: var(--hermes-mobile-bg) !important;
+  padding-bottom: calc(var(--hermes-mobile-composer-height, 5.4rem) + 0.75rem + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+  scroll-padding-block: 1rem calc(var(--hermes-mobile-composer-height, 5.4rem) + 1rem + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+}
+
+.hermes-mobile-popover-menu {
+  overflow: visible !important;
+  border-color: var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-panel) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: var(--hermes-mobile-shadow) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-popover-arrow {
+  position: absolute;
+  top: -0.45rem;
+  right: 1.35rem;
+  width: 1rem;
+  height: 1rem;
+  transform: rotate(45deg);
+  border-left: 1px solid var(--hermes-mobile-line);
+  border-top: 1px solid var(--hermes-mobile-line);
+  background: var(--hermes-mobile-panel);
+}
+
+.hermes-mobile-menu-row {
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-menu-row:hover,
+.hermes-mobile-menu-row--primary {
+  background: var(--hermes-mobile-soft) !important;
+}
+
+.hermes-mobile-menu-icon {
+  background: color-mix(in srgb, var(--hermes-mobile-green) 14%, transparent) !important;
+  color: var(--hermes-mobile-green) !important;
+}
+
+.hermes-mobile-menu-divider {
+  background: var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-bubble {
+  color: var(--hermes-mobile-text) !important;
+  border-color: var(--hermes-mobile-line) !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-bubble--assistant {
+  background: var(--hermes-mobile-assistant) !important;
+}
+
+.hermes-mobile-bubble--user {
+  background: var(--hermes-mobile-user) !important;
+}
+
+.hermes-mobile-agent-card {
+  border-radius: 1.65rem !important;
+  border-color: var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-panel) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: var(--hermes-mobile-shadow) !important;
+}
+
+.hermes-mobile-app-composer {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: var(--hermes-mobile-keyboard-inset, 0px);
+  padding-bottom: calc(0.6rem + env(safe-area-inset-bottom, 0px)) !important;
+  background: color-mix(in srgb, var(--hermes-mobile-bg) 78%, transparent) !important;
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  transition: bottom 180ms cubic-bezier(0.32, 0.72, 0, 1) !important;
+}
+
+.hermes-mobile-composer-field {
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1.45rem !important;
+  background: var(--hermes-mobile-field) !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-composer textarea {
+  color: var(--hermes-mobile-text) !important;
+  display: block;
+  min-width: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  text-indent: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.hermes-mobile-composer button[aria-label="Upload files"],
+.hermes-mobile-composer button[aria-label="Voice ready"],
+.hermes-mobile-composer button[aria-label="Send message"],
+.hermes-mobile-composer button[aria-label="Stop response"] {
+  aspect-ratio: 1 / 1 !important;
+  flex: 0 0 44px !important;
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  min-height: 44px !important;
+  max-height: 44px !important;
+  border-radius: 9999px !important;
+  border-color: var(--hermes-mobile-line) !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-composer button[aria-label="Upload files"] {
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-composer button[aria-label="Voice ready"],
+.hermes-mobile-composer button[aria-label="Send message"] {
+  background: var(--hermes-mobile-green) !important;
+  color: #fff !important;
+}
+
+.hermes-mobile-composer textarea.hermes-mobile-composer-field {
+  min-height: 2.65rem !important;
+  max-height: 8.5rem !important;
+  padding-left: 1.08rem !important;
+  padding-right: 1.08rem !important;
+}
+
+.hermes-mobile-attachment-tray {
+  scrollbar-width: none;
+}
+
+.hermes-mobile-attachment-tray::-webkit-scrollbar {
+  display: none;
+}
+
+.hermes-mobile-attachment-chip {
+  display: inline-flex;
+  min-width: 0;
+  max-width: min(13rem, 62vw);
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.4rem;
+  border: 1px solid var(--hermes-mobile-line);
+  border-radius: 9999px;
+  background: color-mix(in srgb, var(--hermes-mobile-field) 86%, var(--hermes-mobile-soft));
+  color: var(--hermes-mobile-text);
+  font-size: 0.78rem;
+  font-weight: 560;
+  line-height: 1.2;
+  padding: 0.35rem 0.42rem 0.35rem 0.65rem;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line);
+}
+
+.hermes-mobile-attachment-chip > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hermes-mobile-attachment-chip button {
+  display: grid !important;
+  width: 1.35rem !important;
+  height: 1.35rem !important;
+  min-width: 1.35rem !important;
+  min-height: 1.35rem !important;
+  place-items: center !important;
+  border: 0 !important;
+  border-radius: 9999px !important;
+  background: var(--hermes-mobile-soft) !important;
+  color: var(--hermes-mobile-muted) !important;
+  padding: 0 !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble {
+  width: fit-content !important;
+  min-width: min(7rem, 62%) !important;
+  max-width: min(82%, 18.5rem) !important;
+  border-radius: 1.05rem !important;
+  padding: 0.72rem 0.88rem !important;
+  font-size: 0.94rem !important;
+  line-height: 1.35 !important;
+  overflow-x: hidden !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  contain: none !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble > div,
+.hermes-mobile-app-chat .hermes-mobile-bubble p,
+.hermes-mobile-app-chat .hermes-mobile-bubble li,
+.hermes-mobile-app-chat .hermes-mobile-bubble h1,
+.hermes-mobile-app-chat .hermes-mobile-bubble h2,
+.hermes-mobile-app-chat .hermes-mobile-bubble h3,
+.hermes-mobile-app-chat .hermes-mobile-bubble h4,
+.hermes-mobile-app-chat .hermes-mobile-bubble span,
+.hermes-mobile-app-chat .hermes-mobile-bubble strong,
+.hermes-mobile-app-chat .hermes-mobile-bubble em,
+.hermes-mobile-app-chat .hermes-mobile-bubble a,
+.hermes-mobile-app-chat .hermes-mobile-bubble code {
+  max-width: 100% !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble a {
+  display: inline !important;
+  color: var(--hermes-mobile-green) !important;
+  text-decoration-thickness: 1px !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble code {
+  white-space: pre-wrap !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble pre {
+  max-width: 100% !important;
+  overflow-x: auto !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble pre code {
+  display: block !important;
+  min-width: 0 !important;
+  white-space: pre-wrap !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-bubble--handoff,
+.hermes-mobile-app-chat .hermes-mobile-bubble--system {
+  max-width: 100% !important;
+}
+
+.hermes-mobile-app-chat .hermes-mobile-agent-card {
+  margin-left: 2.95rem;
+}
+
+.hermes-mobile-typing-inline {
+  min-width: 4.4rem;
+}
+
+.hermes-mobile-agent-details {
+  color: var(--hermes-mobile-text);
+}
+
+.hermes-mobile-agent-details .rounded-full {
+  background: color-mix(in srgb, var(--hermes-mobile-green) 10%, transparent) !important;
+  border-color: color-mix(in srgb, var(--hermes-mobile-green) 20%, transparent) !important;
+  color: var(--hermes-mobile-green) !important;
+}
+
+.hermes-mobile-sessions-shell {
+  background: var(--hermes-mobile-bg) !important;
+  border-color: var(--hermes-mobile-line) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", Inter, sans-serif;
+  --hermes-mobile-keyboard-inset: 0px;
+}
+
+[data-force-mobile-sessions="true"].hermes-mobile-sessions-shell {
+  display: flex !important;
+  flex: 0 1 430px !important;
+  width: min(100%, 430px) !important;
+  max-width: 430px !important;
+  min-height: 100dvh !important;
+  overflow: hidden !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 2.65rem !important;
+  background: var(--hermes-mobile-bg) !important;
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.035), 0 24px 70px rgba(0, 0, 0, 0.28) !important;
+}
+
+[data-force-mobile-sessions="true"] .hermes-mobile-sessions-header {
+  display: grid !important;
+}
+
+[data-force-mobile-sessions="true"] .hermes-session-search-glass {
+  display: block !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass {
+  position: absolute !important;
+  left: 0;
+  right: 0;
+  bottom: var(--hermes-mobile-keyboard-inset, 0px) !important;
+  z-index: 20;
+  border: 0 !important;
+  background: color-mix(in srgb, var(--hermes-mobile-bg) 78%, transparent) !important;
+  box-shadow: none !important;
+  backdrop-filter: blur(18px) !important;
+  -webkit-backdrop-filter: blur(18px) !important;
+  transition: bottom 180ms cubic-bezier(0.32, 0.72, 0, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass > div {
+  align-items: flex-end;
+  gap: 0.5rem;
+  min-height: auto;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass input {
+  height: 48px !important;
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1.45rem !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  letter-spacing: 0 !important;
+  line-height: 1.5rem !important;
+  padding: 0.75rem 1.08rem !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass input::placeholder {
+  color: var(--hermes-mobile-muted) !important;
+  font-family: inherit !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass input::-webkit-search-cancel-button,
+.hermes-mobile-sessions-shell .hermes-session-search-glass input::-webkit-search-decoration {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-glass button,
+.hermes-mobile-sessions-shell .hermes-session-search-icon {
+  aspect-ratio: 1 / 1 !important;
+  flex: 0 0 44px !important;
+  width: 44px !important;
+  height: 44px !important;
+  min-width: 44px !important;
+  max-width: 44px !important;
+  min-height: 44px !important;
+  max-height: 44px !important;
+  border-radius: 9999px !important;
+  background: var(--hermes-mobile-soft) !important;
+  color: var(--hermes-mobile-text) !important;
+  letter-spacing: 0 !important;
+  padding: 0 !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-clear {
+  color: var(--hermes-mobile-text) !important;
+  opacity: 1 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-search-clear:disabled {
+  color: var(--hermes-mobile-text) !important;
+  opacity: 1 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass {
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  transition:
+    max-height 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass .hermes-mobile-pinned-header {
+  max-height: 2rem !important;
+  margin-bottom: 0.45rem !important;
+  padding: 0 0.2rem !important;
+  color: var(--hermes-mobile-muted) !important;
+  transition:
+    opacity 220ms ease,
+    transform 320ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    margin 320ms ease !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass .hermes-mobile-pinned-header > div:first-child {
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.82rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass .hermes-mobile-pinned-header > div:last-child {
+  font-family: inherit !important;
+  font-size: 0.74rem !important;
+  letter-spacing: 0 !important;
+  text-transform: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass button,
+.hermes-mobile-sessions-shell .hermes-ios-session-list > div {
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1.12rem !important;
+  background: var(--hermes-mobile-assistant) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card-wrap {
+  position: relative !important;
+  min-width: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid {
+  display: flex !important;
+  grid-template-columns: none !important;
+  gap: 0.58rem !important;
+  margin: 0 -0.58rem !important;
+  max-height: 34rem !important;
+  overscroll-behavior-x: contain !important;
+  overflow-x: auto !important;
+  overflow-y: hidden !important;
+  padding: 0 0.58rem 0.12rem !important;
+  scroll-padding: 0.58rem !important;
+  scroll-snap-type: x mandatory !important;
+  -ms-overflow-style: none !important;
+  scrollbar-width: none !important;
+  transition:
+    opacity 240ms ease,
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    max-height 360ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+  transform-origin: top center !important;
+  -webkit-overflow-scrolling: touch !important;
+  will-change: transform, filter !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-page {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) !important;
+  gap: 0.48rem !important;
+  flex: 0 0 100% !important;
+  min-width: 100% !important;
+  scroll-snap-align: start !important;
+  scroll-snap-stop: always !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid::-webkit-scrollbar {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid::before,
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid::after {
+  content: '' !important;
+  position: sticky !important;
+  z-index: 2 !important;
+  display: block !important;
+  flex: 0 0 0 !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  height: 5.15rem !important;
+  margin-block: 0.1rem !important;
+  border-radius: 9999px !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  filter: blur(0.15rem) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid::before {
+  left: 0.35rem !important;
+  box-shadow: 0.85rem 0 1.25rem color-mix(in srgb, var(--hermes-mobile-green) 42%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid::after {
+  right: 0.35rem !important;
+  box-shadow: -0.85rem 0 1.25rem color-mix(in srgb, var(--hermes-mobile-green) 42%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband="left"] {
+  animation: hermes-pinned-rubberband-left 520ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+  transform-origin: left center !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband="right"] {
+  animation: hermes-pinned-rubberband-right 520ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+  transform-origin: right center !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband="left"]::before {
+  animation: hermes-pinned-edge-glow-left 520ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband="right"]::after {
+  animation: hermes-pinned-edge-glow-right 520ms cubic-bezier(0.22, 1, 0.36, 1) both !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband] .hermes-mobile-pinned-card {
+  filter: brightness(1.045) saturate(1.08) !important;
+  transition:
+    filter 180ms ease,
+    transform 520ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-dots {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.36rem !important;
+  max-height: 1.4rem !important;
+  padding: 0.36rem 0 0 !important;
+  opacity: 1 !important;
+  transition:
+    max-height 300ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 200ms ease,
+    padding 260ms ease,
+    transform 300ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-dots span {
+  display: block !important;
+  width: 0.42rem !important;
+  height: 0.42rem !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-text) 24%, transparent) !important;
+  box-shadow: none !important;
+  transform: scale(0.82) !important;
+  transition:
+    width 220ms cubic-bezier(0.22, 1, 0.36, 1),
+    background-color 180ms ease,
+    opacity 180ms ease,
+    transform 220ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-dots span[data-active="true"] {
+  width: 1.18rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 82%, white) !important;
+  opacity: 1 !important;
+  transform: scale(1) !important;
+  box-shadow: 0 0 0.8rem color-mix(in srgb, var(--hermes-mobile-green) 34%, transparent) !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband] {
+    animation: none !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband]::before,
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-grid[data-pinned-rubberband]::after {
+    animation: none !important;
+    opacity: 0 !important;
+  }
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-inbox {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.48rem !important;
+  margin-bottom: 0.48rem !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-green) 24%, var(--hermes-mobile-line)) !important;
+  border-radius: 1.08rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-user) 58%, var(--hermes-mobile-bg)) !important;
+  color: var(--hermes-mobile-text) !important;
+  padding: 0.64rem !important;
+  scroll-snap-align: none !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-inbox[data-state="clear"] {
+  gap: 0 !important;
+  margin-bottom: 0.4rem !important;
+  border-color: var(--hermes-mobile-line) !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 76%, var(--hermes-mobile-bg)) !important;
+  padding: 0.52rem 0.62rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-head {
+  display: flex !important;
+  align-items: center !important;
+  gap: 0.65rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-head span span:first-child {
+  color: var(--hermes-mobile-text) !important;
+  font-size: 0.92rem !important;
+  font-weight: 680 !important;
+  line-height: 1.15 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-head span span:last-child {
+  color: color-mix(in srgb, var(--hermes-mobile-text) 62%, transparent) !important;
+  font-size: 0.76rem !important;
+  line-height: 1.2 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-icon {
+  display: grid !important;
+  width: 2.1rem !important;
+  height: 2.1rem !important;
+  flex: 0 0 2.1rem !important;
+  place-items: center !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-green) 28%, transparent) !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 15%, transparent) !important;
+  color: var(--hermes-mobile-green) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-inbox[data-state="clear"] .hermes-mobile-attention-icon {
+  width: 1.8rem !important;
+  height: 1.8rem !important;
+  flex-basis: 1.8rem !important;
+  border-color: color-mix(in srgb, var(--hermes-mobile-text) 13%, transparent) !important;
+  background: color-mix(in srgb, var(--hermes-mobile-text) 6%, transparent) !important;
+  color: color-mix(in srgb, var(--hermes-mobile-green) 82%, var(--hermes-mobile-text)) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-alerts {
+  min-height: 2.05rem !important;
+  flex: 0 0 auto !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-green) 30%, transparent) !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 13%, transparent) !important;
+  color: var(--hermes-mobile-green) !important;
+  font-family: inherit !important;
+  font-size: 0.72rem !important;
+  font-weight: 720 !important;
+  line-height: 1 !important;
+  padding: 0 0.7rem !important;
+  white-space: nowrap !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.35rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-row {
+  display: flex !important;
+  min-height: 2.85rem !important;
+  width: 100% !important;
+  align-items: center !important;
+  gap: 0.65rem !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.92rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 88%, transparent) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  padding: 0.48rem 0.65rem !important;
+  text-align: left !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-row span span:first-child {
+  display: block !important;
+  overflow: hidden !important;
+  color: var(--hermes-mobile-text) !important;
+  font-size: 0.82rem !important;
+  font-weight: 620 !important;
+  line-height: 1.2 !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-attention-row span span:last-child {
+  display: block !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+  font-size: 0.72rem !important;
+  line-height: 1.2 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-compact {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  width: 100% !important;
+  max-height: 0 !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  border: 0 solid transparent !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-user) 84%, transparent) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.88rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  opacity: 0 !important;
+  padding: 0 1rem !important;
+  transform: translateY(-0.4rem) scale(0.98) !important;
+  transition:
+    max-height 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    min-height 360ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 220ms ease,
+    padding 320ms ease,
+    transform 360ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass .hermes-mobile-pinned-compact {
+  border-width: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-compact span:last-child {
+  color: color-mix(in srgb, var(--hermes-mobile-text) 68%, transparent) !important;
+  font-size: 0.78rem !important;
+  font-weight: 500 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-mobile-pinned-compact {
+  border-width: 1px !important;
+  border-color: color-mix(in srgb, var(--hermes-mobile-green) 24%, var(--hermes-mobile-line)) !important;
+  max-height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  opacity: 1 !important;
+  padding: 0.55rem 1rem !important;
+  transform: translateY(0) scale(1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-session-pinned-glass .hermes-mobile-pinned-compact {
+  border-width: 1px !important;
+  max-height: 2.5rem !important;
+  min-height: 2.5rem !important;
+  opacity: 1 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-mobile-pinned-header,
+.hermes-mobile-sessions-shell .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-mobile-pinned-grid,
+.hermes-mobile-sessions-shell .hermes-mobile-scroll[data-history-scrolled="true"] .hermes-mobile-pinned-dots {
+  max-height: 0 !important;
+  margin: 0 !important;
+  opacity: 0 !important;
+  padding: 0 !important;
+  overflow: hidden !important;
+  pointer-events: none !important;
+  transform: translateY(-0.75rem) scale(0.985) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-session-pinned-glass button.hermes-mobile-pinned-card {
+  min-height: 4.78rem !important;
+  padding: 0.78rem 0.86rem !important;
+  gap: 0.36rem !important;
+  border-color: color-mix(in srgb, var(--hermes-mobile-green) 30%, var(--hermes-mobile-line)) !important;
+  background: var(--hermes-mobile-user) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--hermes-mobile-green) 10%, transparent),
+    0 1px 0 var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card[data-opening="true"],
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card[data-opening="true"] {
+  opacity: 0 !important;
+  transform: translateY(-0.6rem) scale(0.985) !important;
+  filter: saturate(1.08) brightness(1.05) !important;
+  transition:
+    opacity 145ms ease,
+    transform 145ms cubic-bezier(0.32, 0.72, 0, 1),
+    filter 145ms ease !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-menu {
+  position: absolute !important;
+  top: calc(100% + 0.35rem) !important;
+  right: 0.35rem !important;
+  z-index: 30 !important;
+  min-width: 7.25rem !important;
+  overflow: hidden !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.9rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 96%, black) !important;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.3) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-menu button {
+  display: block !important;
+  width: 100% !important;
+  min-height: 2.55rem !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.9rem !important;
+  line-height: 1.2 !important;
+  text-align: left !important;
+  padding: 0.65rem 0.85rem !important;
+  box-shadow: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-menu button + button {
+  border-top: 1px solid var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card-title {
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card-title .font-mondwest {
+  font-family: inherit !important;
+  font-size: 0.94rem !important;
+  font-weight: 430 !important;
+  line-height: 1.24 !important;
+  letter-spacing: 0 !important;
+  color: var(--hermes-mobile-text) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card-meta {
+  font-family: inherit !important;
+  font-size: 0.76rem !important;
+  font-weight: 400 !important;
+  line-height: 1.3 !important;
+  letter-spacing: 0 !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 76%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card-meta--secondary {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.5rem !important;
+  min-height: 0 !important;
+  margin-top: -0.24rem !important;
+  overscroll-behavior-y: contain !important;
+  padding: 0.72rem 0 calc(5.75rem + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+  scroll-padding-block: 2.8rem calc(5.25rem + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+  scroll-snap-type: y mandatory !important;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(0, 0, 0, 0.18) 0.45rem,
+    rgba(0, 0, 0, 0.72) 1.05rem,
+    #000 2.1rem,
+    #000 calc(100% - 5.25rem),
+    transparent 100%
+  ) !important;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    rgba(0, 0, 0, 0.18) 0.45rem,
+    rgba(0, 0, 0, 0.72) 1.05rem,
+    #000 2.1rem,
+    #000 calc(100% - 5.25rem),
+    transparent 100%
+  ) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pull-indicator {
+  display: grid !important;
+  place-items: center !important;
+  height: 0 !important;
+  overflow: visible !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+  transform: translateY(-0.45rem) scale(0.98) !important;
+  transition:
+    opacity 180ms ease,
+    transform 260ms cubic-bezier(0.22, 1, 0.36, 1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-pull-indicator span {
+  display: inline-flex !important;
+  align-items: center !important;
+  min-height: 1.7rem !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-green) 22%, transparent) !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-user) 42%, var(--hermes-mobile-bg)) !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 78%, transparent) !important;
+  font-family: inherit !important;
+  font-size: 0.74rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  line-height: 1.2 !important;
+  padding: 0.18rem 0.72rem !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list[data-rubberband="top"] .hermes-mobile-pull-indicator {
+  opacity: 1 !important;
+  transform: translateY(0.15rem) scale(1) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-group-label {
+  display: flex !important;
+  align-items: center !important;
+  justify-content: space-between !important;
+  padding: 0.5rem 0.15rem 0.08rem !important;
+  color: var(--hermes-mobile-muted) !important;
+  font-family: inherit !important;
+  font-size: 0.76rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  scroll-snap-align: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-group-label:first-child {
+  padding-top: 0.15rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list > div > div:first-child {
+  min-height: 4.86rem !important;
+  padding: 0.82rem 0.9rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list > div > div:first-child > div.shrink-0.pt-0\.5 {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card {
+  border-radius: 1.12rem !important;
+  border-color: var(--hermes-mobile-line) !important;
+  background: var(--hermes-mobile-assistant) !important;
+  color: var(--hermes-mobile-text) !important;
+  scroll-snap-align: start !important;
+  scroll-snap-stop: normal !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-content {
+  background: var(--hermes-mobile-assistant) !important;
+  transition:
+    transform 260ms cubic-bezier(0.32, 0.72, 0, 1),
+    background-color 160ms ease,
+    filter 180ms ease !important;
+  will-change: transform !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-swipe-actions {
+  position: absolute !important;
+  inset-block: 0 !important;
+  z-index: 0 !important;
+  display: none !important;
+  align-items: stretch !important;
+  overflow: hidden !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-swipe-actions--pin {
+  left: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-swipe-actions--manage {
+  right: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-swipe-button {
+  display: flex !important;
+  min-width: 4.35rem !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.2rem !important;
+  border: 0 !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 28%, transparent) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.72rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-swipe-button--delete {
+  background: color-mix(in srgb, #ef4444 42%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card[data-swipe-open] .hermes-mobile-swipe-actions,
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card:has(.hermes-mobile-session-row-content[style*="translateX"]) .hermes-mobile-swipe-actions {
+  display: flex !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card[data-swipe-active="true"] .hermes-mobile-session-row-content {
+  filter: brightness(1.035) saturate(1.04) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-row-card:active,
+.hermes-mobile-sessions-shell .hermes-mobile-pinned-card:active {
+  transform: scale(0.988);
+  filter: brightness(1.04);
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-search-mark {
+  border-radius: 0.28rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 22%, transparent) !important;
+  color: var(--hermes-mobile-text) !important;
+  padding: 0 0.08rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list .font-mondwest {
+  font-family: inherit !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  line-height: 1.34 !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-title {
+  color: var(--hermes-mobile-text) !important;
+  white-space: normal !important;
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-fresh-dot {
+  flex: 0 0 0.48rem !important;
+  width: 0.48rem !important;
+  height: 0.48rem !important;
+  border-radius: 9999px !important;
+  background: var(--hermes-mobile-green) !important;
+  box-shadow:
+    0 0 0 0.18rem color-mix(in srgb, var(--hermes-mobile-green) 13%, transparent),
+    0 0 1rem color-mix(in srgb, var(--hermes-mobile-green) 52%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-preview {
+  margin-top: 0.18rem !important;
+  display: -webkit-box !important;
+  white-space: normal !important;
+  -webkit-line-clamp: 1 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+  font-family: inherit !important;
+  font-size: 0.82rem !important;
+  font-weight: 400 !important;
+  line-height: 1.28 !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-meta {
+  margin-top: 0.35rem !important;
+  gap: 0.35rem !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 76%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-model {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-model + .hermes-mobile-session-dot {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-count + .hermes-mobile-session-dot {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-tools + .hermes-mobile-session-dot {
+  display: inline !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-tools {
+  display: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-count,
+.hermes-mobile-sessions-shell .hermes-mobile-session-tools,
+.hermes-mobile-sessions-shell .hermes-mobile-session-time {
+  font-family: inherit !important;
+  font-size: 0.84rem !important;
+  font-weight: 400 !important;
+  line-height: 1.3 !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list .font-mono-ui,
+.hermes-mobile-sessions-shell .hermes-ios-session-list .text-xs {
+  font-size: 0.72rem !important;
+  letter-spacing: 0 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list .hermes-mobile-session-count {
+  font-size: 0.84rem !important;
+  font-weight: 400 !important;
+  line-height: 1.3 !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 76%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list .hermes-mobile-session-time,
+.hermes-mobile-sessions-shell .hermes-ios-session-list .hermes-mobile-session-dot {
+  font-size: 0.84rem !important;
+  font-weight: 400 !important;
+  line-height: 1.3 !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list [class*="backdrop-blur"],
+.hermes-mobile-sessions-shell .hermes-mobile-session-row--teal,
+.hermes-mobile-sessions-shell .hermes-mobile-session-row--sky,
+.hermes-mobile-sessions-shell .hermes-mobile-session-row--gold,
+.hermes-mobile-sessions-shell .hermes-mobile-session-row--neutral {
+  background: var(--hermes-mobile-assistant) !important;
+  box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-scroll {
+  background: var(--hermes-mobile-bg) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-sessions-empty {
+  min-height: 15rem !important;
+  margin: 0.5rem 0 5.75rem !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1.25rem !important;
+  background: var(--hermes-mobile-assistant) !important;
+  color: var(--hermes-mobile-muted) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-sessions-empty p:first-of-type {
+  color: var(--hermes-mobile-text) !important;
+  font-size: 0.96rem !important;
+  font-weight: 650 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-sessions-empty p:last-of-type {
+  color: var(--hermes-mobile-muted) !important;
+  font-size: 0.82rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-backdrop {
+  position: absolute !important;
+  inset: 0 !important;
+  z-index: 45 !important;
+  display: flex !important;
+  align-items: flex-end !important;
+  justify-content: center !important;
+  background: rgba(0, 0, 0, 0.32) !important;
+  padding: 0.75rem !important;
+  padding-bottom: calc(0.75rem + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+  animation: fade-in 140ms ease both !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet {
+  width: 100% !important;
+  overflow: hidden !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1.45rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 96%, black) !important;
+  color: var(--hermes-mobile-text) !important;
+  box-shadow: 0 26px 70px rgba(0, 0, 0, 0.44) !important;
+  transform-origin: bottom center !important;
+  animation: hermes-mobile-dock-in 180ms cubic-bezier(0.32, 0.72, 0, 1) both !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-handle {
+  width: 2.4rem !important;
+  height: 0.28rem !important;
+  margin: 0.65rem auto 0.45rem !important;
+  border-radius: 9999px !important;
+  background: color-mix(in srgb, var(--hermes-mobile-text) 22%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-title {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.15rem !important;
+  padding: 0.25rem 1rem 0.8rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-title span:first-child {
+  display: -webkit-box !important;
+  -webkit-line-clamp: 2 !important;
+  -webkit-box-orient: vertical !important;
+  overflow: hidden !important;
+  font-size: 1rem !important;
+  font-weight: 650 !important;
+  line-height: 1.25 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-title span:last-child {
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+  font-size: 0.8rem !important;
+  line-height: 1.2 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions {
+  overflow: hidden !important;
+  border-top: 1px solid var(--hermes-mobile-line) !important;
+  border-bottom: 1px solid var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions button,
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-cancel {
+  display: flex !important;
+  width: 100% !important;
+  min-height: 3.25rem !important;
+  align-items: center !important;
+  gap: 0.8rem !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 1rem !important;
+  font-weight: 500 !important;
+  letter-spacing: 0 !important;
+  line-height: 1.2 !important;
+  padding: 0 1rem !important;
+  text-align: left !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions button + button {
+  border-top: 1px solid var(--hermes-mobile-line) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions svg {
+  color: color-mix(in srgb, var(--hermes-mobile-text) 72%, transparent) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions .hermes-mobile-action-sheet-danger,
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-actions .hermes-mobile-action-sheet-danger svg {
+  color: #ff7a7a !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-action-sheet-cancel {
+  justify-content: center !important;
+  min-height: 3.4rem !important;
+  font-weight: 650 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-backdrop {
+  z-index: 55 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-session-preview-sheet {
+  max-height: min(82dvh, 42rem) !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-title {
+  display: flex !important;
+  flex-direction: column !important;
+  gap: 0.18rem !important;
+  padding: 0.25rem 1rem 0.5rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-title span:first-child {
+  display: -webkit-box !important;
+  overflow: hidden !important;
+  color: var(--hermes-mobile-text) !important;
+  font-size: 1.05rem !important;
+  font-weight: 680 !important;
+  line-height: 1.22 !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 2 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-title span:last-child {
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+  font-size: 0.78rem !important;
+  line-height: 1.25 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-summary {
+  margin: 0 1rem 0.75rem !important;
+  display: -webkit-box !important;
+  overflow: hidden !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 72%, transparent) !important;
+  font-size: 0.88rem !important;
+  line-height: 1.38 !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 3 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker {
+  margin: 0 1rem 0.75rem !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-gold) 35%, transparent) !important;
+  border-radius: 1.05rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-gold) 11%, transparent) !important;
+  padding: 0.72rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active {
+  margin: 0 1rem 0.75rem !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-green) 28%, transparent) !important;
+  border-radius: 1.05rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-green) 10%, transparent) !important;
+  padding: 0.72rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-head {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.45rem !important;
+  color: var(--hermes-mobile-green) !important;
+  font-size: 0.68rem !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.12em !important;
+  line-height: 1.1 !important;
+  text-transform: uppercase !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-body {
+  display: grid !important;
+  gap: 0.55rem !important;
+  margin-top: 0.62rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-body div:not(.hermes-mobile-preview-active-meta) {
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.9rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 88%, transparent) !important;
+  padding: 0.62rem 0.68rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-body span {
+  display: block !important;
+  margin-bottom: 0.25rem !important;
+  color: var(--hermes-mobile-green) !important;
+  font-size: 0.64rem !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.1em !important;
+  line-height: 1.1 !important;
+  text-transform: uppercase !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-body p {
+  display: -webkit-box !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  color: var(--hermes-mobile-text) !important;
+  font-size: 0.84rem !important;
+  line-height: 1.38 !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 4 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-meta {
+  display: flex !important;
+  justify-content: space-between !important;
+  gap: 0.7rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-meta span {
+  margin: 0 !important;
+  min-width: 0 !important;
+  overflow: hidden !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 58%, transparent) !important;
+  font-size: 0.68rem !important;
+  font-weight: 650 !important;
+  letter-spacing: 0 !important;
+  text-overflow: ellipsis !important;
+  text-transform: none !important;
+  white-space: nowrap !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-actions {
+  display: flex !important;
+  gap: 0.48rem !important;
+  margin-top: 0.65rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-actions button {
+  width: 100% !important;
+  min-height: 2.8rem !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.9rem !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.86rem !important;
+  font-weight: 700 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-active-actions button {
+  border-color: color-mix(in srgb, var(--destructive) 35%, transparent) !important;
+  background: color-mix(in srgb, var(--destructive) 12%, transparent) !important;
+  color: var(--destructive) !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-head {
+  display: inline-flex !important;
+  align-items: center !important;
+  gap: 0.45rem !important;
+  color: var(--hermes-mobile-gold) !important;
+  font-size: 0.68rem !important;
+  font-weight: 760 !important;
+  letter-spacing: 0.12em !important;
+  line-height: 1.1 !important;
+  text-transform: uppercase !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-body {
+  display: grid !important;
+  gap: 0.62rem !important;
+  margin-top: 0.62rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-body p {
+  margin: 0 !important;
+  color: color-mix(in srgb, var(--hermes-mobile-text) 82%, transparent) !important;
+  font-size: 0.84rem !important;
+  line-height: 1.42 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-body code {
+  display: block !important;
+  max-height: 6.5rem !important;
+  overflow: auto !important;
+  border: 1px solid color-mix(in srgb, var(--hermes-mobile-gold) 24%, transparent) !important;
+  border-radius: 0.82rem !important;
+  background: rgba(0, 0, 0, 0.22) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace !important;
+  font-size: 0.74rem !important;
+  line-height: 1.38 !important;
+  padding: 0.58rem 0.62rem !important;
+  white-space: pre-wrap !important;
+  word-break: break-word !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-grid {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  gap: 0.48rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-choice-list {
+  display: grid !important;
+  gap: 0.45rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-choice-list button,
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-grid button,
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form button {
+  min-height: 2.7rem !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.9rem !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.83rem !important;
+  font-weight: 680 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker-grid button:nth-child(2),
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form button {
+  background: var(--hermes-mobile-green) !important;
+  color: #fff !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-choice-list button {
+  justify-content: flex-start !important;
+  padding: 0.66rem 0.78rem !important;
+  text-align: left !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto !important;
+  gap: 0.48rem !important;
+  align-items: end !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form input,
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form textarea {
+  width: 100% !important;
+  min-width: 0 !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.9rem !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  font: inherit !important;
+  font-size: 0.9rem !important;
+  line-height: 1.3 !important;
+  outline: none !important;
+  padding: 0.72rem 0.78rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form textarea {
+  min-height: 4.5rem !important;
+  resize: none !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form button {
+  min-width: 4.25rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-blocker button:disabled,
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form input:disabled,
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-form textarea:disabled {
+  opacity: 0.54 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-response-error {
+  margin-top: 0.62rem !important;
+  border: 1px solid color-mix(in srgb, var(--destructive) 38%, transparent) !important;
+  border-radius: 0.85rem !important;
+  background: color-mix(in srgb, var(--destructive) 12%, transparent) !important;
+  color: var(--destructive) !important;
+  font-size: 0.78rem !important;
+  line-height: 1.34 !important;
+  padding: 0.58rem 0.66rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-messages {
+  min-height: 5.25rem !important;
+  overflow-y: auto !important;
+  border-top: 1px solid var(--hermes-mobile-line) !important;
+  border-bottom: 1px solid var(--hermes-mobile-line) !important;
+  padding: 0.65rem 1rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-message {
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 0.95rem !important;
+  background: color-mix(in srgb, var(--hermes-mobile-assistant) 92%, transparent) !important;
+  padding: 0.65rem 0.72rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-message + .hermes-mobile-preview-message {
+  margin-top: 0.45rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-message span {
+  display: block !important;
+  margin-bottom: 0.25rem !important;
+  color: var(--hermes-mobile-green) !important;
+  font-size: 0.66rem !important;
+  font-weight: 700 !important;
+  letter-spacing: 0.08em !important;
+  line-height: 1.1 !important;
+  text-transform: uppercase !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-message p {
+  display: -webkit-box !important;
+  overflow: hidden !important;
+  color: var(--hermes-mobile-text) !important;
+  font-size: 0.82rem !important;
+  line-height: 1.36 !important;
+  margin: 0 !important;
+  -webkit-box-orient: vertical !important;
+  -webkit-line-clamp: 3 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-empty {
+  display: grid !important;
+  min-height: 4.5rem !important;
+  place-items: center !important;
+  color: var(--hermes-mobile-muted) !important;
+  font-size: 0.84rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-actions {
+  display: grid !important;
+  grid-template-columns: 0.9fr 1.1fr !important;
+  gap: 0.55rem !important;
+  padding: 0.75rem 1rem 1rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-actions button {
+  display: inline-flex !important;
+  min-height: 3rem !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 0.45rem !important;
+  border: 1px solid var(--hermes-mobile-line) !important;
+  border-radius: 1rem !important;
+  background: var(--hermes-mobile-field) !important;
+  color: var(--hermes-mobile-text) !important;
+  font-family: inherit !important;
+  font-size: 0.92rem !important;
+  font-weight: 650 !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-mobile-preview-actions button:last-child {
+  background: var(--hermes-mobile-green) !important;
+  color: #fff !important;
+}
+
+@media (max-width: 540px) {
+  [data-force-mobile-sessions="true"].hermes-mobile-sessions-shell {
+    flex: 1 1 auto !important;
+    width: 100%;
+    max-width: none !important;
+    min-height: 100dvh !important;
+    border-radius: 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+  }
+}
+
+@media (max-width: 540px) {
+  .hermes-mobile-app,
+  [data-force-mobile-surface="true"] .hermes-mobile-app {
+    flex: 1 1 auto !important;
+    width: 100%;
+    max-width: none !important;
+    min-height: 100dvh !important;
+    border-radius: 0 !important;
+    border-left: 0 !important;
+    border-right: 0 !important;
+    box-shadow: none !important;
+  }
+}
+
 /* Plus-lighter blend used by logos/titles for a subtle glow. */
 .blend-lighter {
   mix-blend-mode: plus-lighter;
@@ -240,6 +3080,65 @@ code { font-size: 0.875rem; }
    still apply here. */
 .font-mono-ui {
   font-family: var(--theme-font-mono);
+}
+
+.hermes-typing-dot {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 9999px;
+  background: currentColor;
+  opacity: 0.42;
+  animation: hermes-typing-bounce 1.08s ease-in-out infinite;
+}
+
+@keyframes hermes-typing-bounce {
+  0%, 80%, 100% {
+    opacity: 0.34;
+    transform: translateY(0);
+  }
+  40% {
+    opacity: 1;
+    transform: translateY(-0.18rem);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hermes-typing-dot {
+    animation: none;
+    opacity: 0.72;
+  }
+}
+
+.hermes-ios-picker-list {
+  overscroll-behavior: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+
+.hermes-ios-picker-list::-webkit-scrollbar {
+  display: none;
+}
+
+.hermes-context-ring {
+  position: absolute;
+  inset: -0.2rem;
+  z-index: 0;
+  border-radius: 9999px;
+  pointer-events: none;
+  background: var(--hermes-context-ring, transparent);
+  filter:
+    drop-shadow(0 0 0.18rem rgba(255, 255, 255, 0.62))
+    drop-shadow(0 0 0.42rem rgba(255, 255, 255, 0.28));
+  mask-image: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 0.16rem),
+    #000 calc(100% - 0.145rem)
+  );
+  -webkit-mask-image: radial-gradient(
+    farthest-side,
+    transparent calc(100% - 0.16rem),
+    #000 calc(100% - 0.145rem)
+  );
 }
 
 /* Subtle grain overlay for badges. */
@@ -266,4 +3165,3 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
-

@@ -54,6 +54,39 @@ class TestHostHeaderValidator:
                     f"bound={bound} must reject attacker host={attacker!r}"
                 )
 
+    def test_loopback_proxy_host_requires_explicit_allowlist_and_loopback_peer(self):
+        """Tailscale Serve can terminate HTTPS at a tailnet hostname while
+        the dashboard remains bound to localhost. That hostname is only valid
+        when the immediate proxy peer is loopback and the operator explicitly
+        allowlisted the hostname."""
+        from hermes_cli.web_server import _is_accepted_host
+
+        allowed = frozenset({"mac.tailnet.ts.net"})
+
+        assert _is_accepted_host(
+            "mac.tailnet.ts.net",
+            "127.0.0.1",
+            loopback_proxy_hosts=allowed,
+            client_host="127.0.0.1",
+        )
+        assert _is_accepted_host(
+            "mac.tailnet.ts.net:443",
+            "localhost",
+            loopback_proxy_hosts=allowed,
+            client_host="::1",
+        )
+        assert not _is_accepted_host(
+            "mac.tailnet.ts.net",
+            "127.0.0.1",
+            loopback_proxy_hosts=allowed,
+            client_host="10.0.0.5",
+        )
+        assert not _is_accepted_host(
+            "mac.tailnet.ts.net",
+            "127.0.0.1",
+            client_host="127.0.0.1",
+        )
+
     def test_zero_zero_bind_accepts_anything(self):
         """0.0.0.0 means operator explicitly opted into all-interfaces
         (requires --insecure). No Host-layer defence is possible — rely

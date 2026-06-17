@@ -1,5 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
+import { getPinnedSessions, setPinnedSessions } from '@/hermes'
 import {
   arraysEqual,
   insertUniqueId,
@@ -86,7 +87,42 @@ export const $panesFlipped = atom(storedBoolean(PANES_FLIPPED_STORAGE_KEY, false
 export const $isSidebarResizing = atom(false)
 export const $sessionsLimit = atom(SIDEBAR_SESSIONS_PAGE_SIZE)
 
-$pinnedSessionIds.subscribe(ids => persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids]))
+let syncingPinnedSessions = false
+let pinnedSessionsHydrated = false
+
+function syncPinnedSessionsToBackend(ids: readonly string[]) {
+  if (syncingPinnedSessions || !pinnedSessionsHydrated) {
+    return
+  }
+
+  void setPinnedSessions([...ids]).catch(() => undefined)
+}
+
+if (typeof window !== 'undefined' && 'hermesDesktop' in window) {
+  void getPinnedSessions()
+    .then(({ ids }) => {
+      pinnedSessionsHydrated = true
+      if (ids.length > 0 && !arraysEqual(ids, $pinnedSessionIds.get())) {
+        syncingPinnedSessions = true
+        $pinnedSessionIds.set(ids)
+        syncingPinnedSessions = false
+        persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids])
+      } else {
+        syncPinnedSessionsToBackend($pinnedSessionIds.get())
+      }
+    })
+    .catch(() => {
+      pinnedSessionsHydrated = true
+      syncPinnedSessionsToBackend($pinnedSessionIds.get())
+    })
+} else {
+  pinnedSessionsHydrated = true
+}
+
+$pinnedSessionIds.subscribe(ids => {
+  persistStringArray(SIDEBAR_PINNED_STORAGE_KEY, [...ids])
+  syncPinnedSessionsToBackend(ids)
+})
 $sidebarCronOpen.subscribe(open => persistBoolean(SIDEBAR_CRON_OPEN_STORAGE_KEY, open))
 $sidebarMessagingOpenIds.subscribe(ids => persistStringArray(SIDEBAR_MESSAGING_OPEN_STORAGE_KEY, [...ids]))
 $sidebarSessionOrderIds.subscribe(ids => persistStringArray(SIDEBAR_SESSION_ORDER_STORAGE_KEY, [...ids]))

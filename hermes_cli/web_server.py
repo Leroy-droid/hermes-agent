@@ -184,6 +184,35 @@ app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
 # ---------------------------------------------------------------------------
 _SESSION_TOKEN = os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN") or secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
+_MOBILE_TOKEN_HEADER_NAME = "X-Hermes-Mobile-Token"
+_MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
+    "/api/mobile/auth/check",
+    "/api/sessions",
+})
+_MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
+_MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
+_MOBILE_TOKEN_SEND_SUFFIX = "/messages"
+
+
+def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
+    if method.upper() != "GET":
+        return False
+    if path in _MOBILE_TOKEN_READONLY_PATHS:
+        return True
+    if not path.startswith(_MOBILE_TOKEN_SESSION_DETAIL_PREFIX):
+        return False
+    # Allow only read-only session detail and messages endpoints. Keep mutating
+    # session routes (PATCH/DELETE/archive/etc.) protected by dashboard auth.
+    return path.endswith("/messages") or path.count("/") == 3
+
+
+def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
+    if method.upper() != "POST":
+        return False
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and path.endswith(_MOBILE_TOKEN_SEND_SUFFIX)
+
+
+_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read", "messages:send"})
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -247,6 +276,31 @@ def _has_valid_session_token(request: Request) -> bool:
     return hmac.compare_digest(auth.encode(), expected.encode())
 
 
+def _has_valid_mobile_token(request: Request, *, required_scope: str = "sessions:read") -> bool:
+    """True if request carries a valid scoped native-device token.
+
+    Mobile tokens are separate from the dashboard SPA token. They are intended
+    for native iPhone/iPad/Mac clients and are only accepted on very small
+    path allowlists. Read routes require ``sessions:read``; the native send
+    route requires the separate ``messages:send`` scope and still routes
+    through the existing live-session prompt runner.
+    """
+    raw = request.headers.get(_MOBILE_TOKEN_HEADER_NAME, "")
+    if not raw:
+        return False
+    try:
+        from hermes_cli.mobile_pairing import MobilePairingStore
+
+        result = MobilePairingStore().validate_token(raw, required_scope=required_scope)
+    except Exception:
+        _log.exception("mobile token validation failed")
+        return False
+    if result.ok and result.record is not None:
+        request.state.mobile_device = result.record
+        return True
+    return False
+
+
 def _require_token(request: Request) -> None:
     """Authorize a sensitive endpoint, raising 401 if the caller isn't allowed.
 
@@ -266,6 +320,16 @@ def _require_token(request: Request) -> None:
       making plugin install/enable/disable and the other ``_require_token``
       endpoints permanently unreachable behind the gate. Defer to the gate.
     """
+    if (
+        _is_mobile_token_readonly_path(request.url.path, request.method)
+        and _has_valid_mobile_token(request, required_scope="sessions:read")
+    ):
+        return
+    if (
+        _is_mobile_token_send_path(request.url.path, request.method)
+        and _has_valid_mobile_token(request, required_scope="messages:send")
+    ):
+        return
     if getattr(request.app.state, "auth_required", False):
         # Gate is authoritative. It attaches ``request.state.session`` on
         # success and 401s otherwise, so a request that reached us is already
@@ -304,17 +368,10 @@ def should_require_auth(host: str, allow_public: bool) -> bool:
     return (host not in _LOOPBACK_HOST_VALUES) and (not allow_public)
 
 
-def _is_accepted_host(host_header: str, bound_host: str) -> bool:
-    """True if the Host header targets the interface we bound to.
-
-    Accepts:
-    - Exact bound host (with or without port suffix)
-    - Loopback aliases when bound to loopback
-    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
-      no protection possible at this layer)
-    """
+def _host_only(host_header: str) -> str:
+    """Return a lower-cased host without any port suffix."""
     if not host_header:
-        return False
+        return ""
     # Strip port suffix. IPv6 addresses use bracket notation:
     #   [::1]         — no port
     #   [::1]:9119    — with port
@@ -331,7 +388,45 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
             host_only = h.strip("[]")
     else:
         host_only = h.rsplit(":", 1)[0] if ":" in h else h
-    host_only = host_only.lower()
+    return host_only.lower()
+
+
+def _configured_loopback_proxy_hosts() -> frozenset[str]:
+    """Operator-approved public Host headers for loopback reverse proxies.
+
+    This keeps the dashboard itself bound to 127.0.0.1 while allowing a
+    trusted local reverse proxy such as Tailscale Serve to terminate HTTPS at
+    a tailnet hostname and forward to the loopback dashboard. Values come from
+    HERMES_DASHBOARD_PROXY_HOSTS as a comma-separated hostname list.
+    """
+    raw = os.getenv("HERMES_DASHBOARD_PROXY_HOSTS", "")
+    return frozenset(filter(None, (_host_only(part) for part in raw.split(","))))
+
+
+def _client_is_loopback_host(client_host: str | None) -> bool:
+    return (client_host or "").strip().lower() in _LOOPBACK_HOST_VALUES
+
+
+def _is_accepted_host(
+    host_header: str,
+    bound_host: str,
+    *,
+    loopback_proxy_hosts: frozenset[str] | None = None,
+    client_host: str | None = None,
+) -> bool:
+    """True if the Host header targets the interface we bound to.
+
+    Accepts:
+    - Exact bound host (with or without port suffix)
+    - Loopback aliases when bound to loopback
+    - Operator-approved loopback reverse-proxy hosts, but only when the
+      dashboard is bound to loopback and the immediate peer is loopback
+    - Any host when bound to 0.0.0.0 (explicit opt-in to non-loopback,
+      no protection possible at this layer)
+    """
+    host_only = _host_only(host_header)
+    if not host_only:
+        return False
 
     # 0.0.0.0 bind means operator explicitly opted into all-interfaces
     # (requires --insecure per web_server.start_server). No Host-layer
@@ -339,10 +434,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept the loopback names plus any explicitly configured
+    # reverse-proxy hosts when the proxy itself connects from loopback.
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        if (
+            loopback_proxy_hosts
+            and host_only in loopback_proxy_hosts
+            and _client_is_loopback_host(client_host)
+        ):
+            return True
+        return False
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc
@@ -365,7 +469,12 @@ async def host_header_middleware(request: Request, call_next):
     bound_host = getattr(app.state, "bound_host", None)
     if bound_host:
         host_header = request.headers.get("host", "")
-        if not _is_accepted_host(host_header, bound_host):
+        if not _is_accepted_host(
+            host_header,
+            bound_host,
+            loopback_proxy_hosts=_configured_loopback_proxy_hosts(),
+            client_host=(request.client.host if request.client else None),
+        ):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -403,7 +512,15 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        if not _has_valid_session_token(request):
+        mobile_read_ok = (
+            _is_mobile_token_readonly_path(path, request.method)
+            and _has_valid_mobile_token(request, required_scope="sessions:read")
+        )
+        mobile_send_ok = (
+            _is_mobile_token_send_path(path, request.method)
+            and _has_valid_mobile_token(request, required_scope="messages:send")
+        )
+        if not (mobile_read_ok or mobile_send_ok) and not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -6358,6 +6475,359 @@ class BulkDeleteSessions(BaseModel):
     profile: Optional[str] = None
 
 
+class PinnedSessionsBody(BaseModel):
+    ids: List[str]
+
+
+_PINNED_SESSIONS_STATE_FILE = "desktop-pinned-sessions.json"
+_PINNED_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9_.:@/+\\=-]{1,256}$")
+
+
+def _pinned_sessions_path() -> Path:
+    return get_hermes_home() / "runtime" / _PINNED_SESSIONS_STATE_FILE
+
+
+def _normalize_pinned_session_ids(ids: List[str]) -> List[str]:
+    normalized: List[str] = []
+    seen = set()
+    for raw in ids[:200]:
+        if not isinstance(raw, str):
+            continue
+        session_id = raw.strip()
+        if not session_id or session_id in seen:
+            continue
+        if not _PINNED_SESSION_ID_RE.match(session_id):
+            continue
+        normalized.append(session_id)
+        seen.add(session_id)
+    return normalized
+
+
+def _read_pinned_session_ids() -> List[str]:
+    path = _pinned_sessions_path()
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return []
+    except Exception:
+        _log.warning("Failed to read pinned sessions state", exc_info=True)
+        return []
+    ids = data.get("ids") if isinstance(data, dict) else data
+    if not isinstance(ids, list):
+        return []
+    return _normalize_pinned_session_ids(ids)
+
+
+def _write_pinned_session_ids(ids: List[str]) -> List[str]:
+    normalized = _normalize_pinned_session_ids(ids)
+    path = _pinned_sessions_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(f".{os.getpid()}.tmp")
+    tmp.write_text(
+        json.dumps({"ids": normalized, "updated_at": time.time()}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+    return normalized
+
+
+@app.get("/api/sessions/pinned")
+async def get_pinned_sessions_endpoint():
+    """Shared desktop/dashboard pinned session ids.
+
+    The Electron desktop keeps its own localStorage for snappy UI, but mobile
+    dashboard routes cannot read that origin. This tiny shared list lets the
+    desktop mirror its ordered pin ids into Hermes home, and lets
+    ``/sessions?mobile=1`` render the same pinned sessions without adding any
+    model-tool or agent-core surface.
+    """
+    return {"ids": _read_pinned_session_ids()}
+
+
+@app.put("/api/sessions/pinned")
+async def put_pinned_sessions_endpoint(body: PinnedSessionsBody):
+    return {"ok": True, "ids": _write_pinned_session_ids(body.ids)}
+
+
+def _waiting_input_summary(kind: str, payload: Dict[str, Any]) -> str:
+    if kind == "approval":
+        command = str(payload.get("command") or "").strip()
+        description = str(payload.get("description") or "").strip()
+        if command:
+            return f"Approval needed: {command[:96]}"
+        return f"Approval needed{f': {description}' if description else ''}"
+    if kind == "clarify":
+        question = str(payload.get("question") or "").strip()
+        return question or "Question waiting for your answer"
+    if kind == "sudo":
+        return "Sudo password needed"
+    if kind == "secret":
+        env_var = str(payload.get("env_var") or "").strip()
+        prompt = str(payload.get("prompt") or "").strip()
+        return f"Secret needed: {env_var}" if env_var else prompt or "Secret needed"
+    return "Input needed"
+
+
+@app.get("/api/sessions/waiting-input")
+async def get_waiting_input_sessions(limit: int = 10):
+    """Live sessions blocked on approval/clarify/sudo/secret input.
+
+    This reads the dashboard gateway's in-memory prompt queues and enriches
+    each row with the normal session shape used by the Sessions page. It is
+    deliberately live-only: prompt waits are transient and are not stored in
+    ``state.db``.
+    """
+    allowed_kinds = {"approval", "clarify", "sudo", "secret"}
+    try:
+        from hermes_state import SessionDB
+        from tui_gateway.server import list_waiting_input_sessions
+
+        waiting = [
+            row
+            for row in list_waiting_input_sessions(limit=max(1, min(int(limit or 10), 50)))
+            if str(row.get("kind") or "") in allowed_kinds
+        ]
+        db = SessionDB()
+        try:
+            rows: List[Dict[str, Any]] = []
+            for item in waiting:
+                kind = str(item.get("kind") or "input")
+                payload = item.get("payload") if isinstance(item.get("payload"), dict) else {}
+                live = item.get("session") if isinstance(item.get("session"), dict) else {}
+                session_key = str(live.get("session_key") or live.get("id") or "").strip()
+                stored = db._get_session_rich_row(session_key) if session_key else None
+                summary = _waiting_input_summary(kind, payload)
+                last_active = max(
+                    float((stored or {}).get("last_active") or 0),
+                    float(live.get("last_active") or 0),
+                )
+                row = {
+                    "id": str((stored or {}).get("id") or session_key or live.get("id") or ""),
+                    "live_session_id": str(live.get("id") or ""),
+                    "source": (stored or {}).get("source") or "tui",
+                    "model": (stored or {}).get("model") or live.get("model"),
+                    "title": (stored or {}).get("title") or live.get("title"),
+                    "started_at": float((stored or {}).get("started_at") or live.get("started_at") or last_active),
+                    "ended_at": None,
+                    "last_active": last_active or time.time(),
+                    "is_active": True,
+                    "message_count": int((stored or {}).get("message_count") or live.get("message_count") or 0),
+                    "tool_call_count": int((stored or {}).get("tool_call_count") or 0),
+                    "input_tokens": int((stored or {}).get("input_tokens") or 0),
+                    "output_tokens": int((stored or {}).get("output_tokens") or 0),
+                    "preview": summary,
+                    "parent_session_id": (stored or {}).get("parent_session_id"),
+                    "pending_kind": kind,
+                    "pending_summary": summary,
+                    "pending_request_id": str(payload.get("request_id") or ""),
+                    "pending_command": str(payload.get("command") or ""),
+                    "pending_description": str(payload.get("description") or ""),
+                    "pending_question": str(payload.get("question") or ""),
+                    "pending_choices": payload.get("choices") if isinstance(payload.get("choices"), list) else [],
+                    "pending_env_var": str(payload.get("env_var") or ""),
+                    "pending_prompt": str(payload.get("prompt") or ""),
+                    "pending_allow_permanent": payload.get("allow_permanent") is not False,
+                }
+                if row["id"]:
+                    rows.append(row)
+            return {"sessions": rows, "total": len(rows), "limit": limit, "offset": 0}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/waiting-input failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+def _active_work_summary(live: Dict[str, Any]) -> str:
+    inflight = live.get("inflight") if isinstance(live.get("inflight"), dict) else {}
+    assistant = str(inflight.get("assistant") or "").strip()
+    user = str(inflight.get("user") or "").strip()
+    preview = str(live.get("preview") or "").strip()
+    if assistant:
+        return assistant[:160]
+    if user:
+        return f"Working on: {user[:140]}"
+    if preview:
+        return preview[:160]
+    status = str(live.get("status") or "working")
+    return f"Session is {status}"
+
+
+@app.get("/api/sessions/active-work")
+async def get_active_work_sessions(limit: int = 10):
+    """Live sessions currently starting, working, or waiting."""
+    try:
+        from hermes_state import SessionDB
+        from tui_gateway.server import list_active_work_sessions
+
+        live_rows = list_active_work_sessions(limit=max(1, min(int(limit or 10), 50)))
+        db = SessionDB()
+        try:
+            rows: List[Dict[str, Any]] = []
+            for live in live_rows:
+                session_key = str(live.get("session_key") or live.get("id") or "").strip()
+                stored = db._get_session_rich_row(session_key) if session_key else None
+                inflight = live.get("inflight") if isinstance(live.get("inflight"), dict) else {}
+                summary = _active_work_summary(live)
+                last_active = max(
+                    float((stored or {}).get("last_active") or 0),
+                    float(live.get("last_active") or 0),
+                )
+                row = {
+                    "id": str((stored or {}).get("id") or session_key or live.get("id") or ""),
+                    "live_session_id": str(live.get("id") or ""),
+                    "source": (stored or {}).get("source") or "tui",
+                    "model": (stored or {}).get("model") or live.get("model"),
+                    "title": (stored or {}).get("title") or live.get("title"),
+                    "started_at": float((stored or {}).get("started_at") or live.get("started_at") or last_active),
+                    "ended_at": None,
+                    "last_active": last_active or time.time(),
+                    "is_active": True,
+                    "message_count": int((stored or {}).get("message_count") or live.get("message_count") or 0),
+                    "tool_call_count": int((stored or {}).get("tool_call_count") or 0),
+                    "input_tokens": int((stored or {}).get("input_tokens") or 0),
+                    "output_tokens": int((stored or {}).get("output_tokens") or 0),
+                    "preview": summary,
+                    "parent_session_id": (stored or {}).get("parent_session_id"),
+                    "live_status": str(live.get("status") or "working"),
+                    "live_running": bool(live.get("running")),
+                    "live_inflight_user": str(inflight.get("user") or ""),
+                    "live_inflight_assistant": str(inflight.get("assistant") or ""),
+                }
+                if row["id"]:
+                    rows.append(row)
+            return {"sessions": rows, "total": len(rows), "limit": limit, "offset": 0}
+        finally:
+            db.close()
+    except Exception:
+        _log.exception("GET /api/sessions/active-work failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+class MobilePairingApprove(BaseModel):
+    device_name: str
+    platform: str = "ios"
+    scopes: Optional[List[str]] = None
+
+
+class MobilePairingRevoke(BaseModel):
+    device_id: str
+
+
+class MobileSessionMessageSend(BaseModel):
+    text: str
+
+
+def _mobile_device_payload(record: Any) -> Dict[str, Any]:
+    return {
+        "device_id": record.device_id,
+        "device_name": record.device_name,
+        "platform": record.platform,
+        "scopes": list(record.scopes),
+        "created_at": record.created_at,
+        "last_seen_at": record.last_seen_at,
+        "revoked_at": record.revoked_at,
+        "active": record.active,
+    }
+
+
+def _validated_mobile_scopes(scopes: Optional[List[str]]) -> List[str]:
+    requested = [str(scope).strip() for scope in (scopes or ["sessions:read"]) if str(scope).strip()]
+    unknown = sorted(set(requested) - set(_MOBILE_ALLOWED_SCOPES))
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported mobile scope(s): {', '.join(unknown)}",
+        )
+    return sorted(set(requested)) or ["sessions:read"]
+
+
+@app.get("/api/mobile/pairing/devices")
+async def list_mobile_pairing_devices(include_revoked: bool = False):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    records = MobilePairingStore().list_devices(include_revoked=include_revoked)
+    devices = [_mobile_device_payload(record) for record in records]
+    return {"devices": devices, "total": len(devices)}
+
+
+@app.post("/api/mobile/pairing/approve")
+async def approve_mobile_pairing(body: MobilePairingApprove):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    scopes = _validated_mobile_scopes(body.scopes)
+    issued = MobilePairingStore().issue_device_token(
+        device_name=body.device_name,
+        platform=body.platform,
+        scopes=scopes,
+    )
+    return {
+        "ok": True,
+        "device": _mobile_device_payload(issued.record),
+        "token": issued.token,
+        "token_header": _MOBILE_TOKEN_HEADER_NAME,
+        "token_shown_once": True,
+    }
+
+
+@app.post("/api/mobile/pairing/revoke")
+async def revoke_mobile_pairing(body: MobilePairingRevoke):
+    from hermes_cli.mobile_pairing import MobilePairingStore
+
+    revoked = MobilePairingStore().revoke_device(body.device_id)
+    if not revoked:
+        raise HTTPException(status_code=404, detail="Mobile device not found or already revoked")
+    return {"ok": True, "device_id": body.device_id, "revoked": True}
+
+
+@app.get("/api/mobile/auth/check")
+async def check_mobile_auth(request: Request):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="sessions:read"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    return {
+        "ok": True,
+        "scope": "sessions:read",
+        "device": _mobile_device_payload(record),
+    }
+
+
+@app.post("/api/mobile/sessions/{session_id}/messages")
+async def send_mobile_session_message(request: Request, session_id: str, body: MobileSessionMessageSend):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    text = str(body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="text must be at most 4000 characters")
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.submit_mobile_prompt_to_live_session(session_id, text)
+    except Exception:
+        _log.exception("POST /api/mobile/sessions/{session_id}/messages failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile send failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "streaming"),
+        "session_id": result.get("session_id", session_id),
+        "live_session_id": result.get("live_session_id", ""),
+        "device": _mobile_device_payload(record),
+    }
+
+
 @app.post("/api/sessions/bulk-delete")
 async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     """Delete every session in ``body.ids`` in a single DB transaction.
@@ -10020,7 +10490,14 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
         return None
 
     host_header = ws.headers.get("host", "")
-    if not _is_accepted_host(host_header, bound_host):
+    loopback_proxy_hosts = _configured_loopback_proxy_hosts()
+    client_host = ws.client.host if ws.client else None
+    if not _is_accepted_host(
+        host_header,
+        bound_host,
+        loopback_proxy_hosts=loopback_proxy_hosts,
+        client_host=client_host,
+    ):
         return f"host_mismatch host={host_header or '?'} bound={bound_host}"
 
     origin = ws.headers.get("origin", "")
@@ -10037,7 +10514,12 @@ def _ws_host_origin_reason(ws: "WebSocket") -> Optional[str]:
     if not parsed.netloc:
         return f"origin_mismatch origin={origin} bound={bound_host}"
 
-    if not _is_accepted_host(parsed.netloc, bound_host):
+    if not _is_accepted_host(
+        parsed.netloc,
+        bound_host,
+        loopback_proxy_hosts=loopback_proxy_hosts,
+        client_host=client_host,
+    ):
         return f"origin_mismatch origin={origin} bound={bound_host}"
     return None
 

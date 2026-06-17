@@ -1029,6 +1029,84 @@ def _sess(params, rid):
     return (s, _wait_agent(s, rid))
 
 
+def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> dict:
+    """Submit a native-mobile text prompt into an existing live gateway session.
+
+    The mobile REST API sees persistent DB session ids. The gateway runner uses
+    short live websocket ids plus ``session_key`` for the stored DB row. This
+    helper deliberately accepts only a currently live session whose live id or
+    stored ``session_key`` matches the requested id; it does not resume old
+    transcripts or create hidden sessions on mobile's behalf.
+    """
+    requested = str(stored_session_id or "").strip()
+    prompt = str(text or "").strip()
+    if not requested:
+        return {"ok": False, "status_code": 400, "detail": "session_id required"}
+    if not prompt:
+        return {"ok": False, "status_code": 400, "detail": "text required"}
+    if len(prompt) > 4000:
+        return {"ok": False, "status_code": 400, "detail": "text must be at most 4000 characters"}
+
+    live_sid = ""
+    session = None
+    with _sessions_lock:
+        for sid, candidate in _sessions.items():
+            if sid == requested or str(candidate.get("session_key") or "") == requested:
+                live_sid = sid
+                session = candidate
+                break
+
+    if session is None:
+        return {
+            "ok": False,
+            "status_code": 404,
+            "detail": "session is not live in the current Hermes desktop gateway",
+        }
+
+    rid = f"mobile_{uuid.uuid4().hex[:12]}"
+    with session["history_lock"]:
+        if session.get("running"):
+            return {"ok": False, "status_code": 409, "detail": "session busy"}
+        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            return {
+                "ok": False,
+                "status_code": 409,
+                "detail": "subagent still running — wait for it to finish",
+            }
+        session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, prompt)
+
+    _ensure_session_db_row(session)
+    _start_agent_build(live_sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _emit(
+                "error",
+                live_sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, live_sid, session, prompt)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    return {
+        "ok": True,
+        "status": "streaming",
+        "session_id": str(session.get("session_key") or requested),
+        "live_session_id": live_sid,
+    }
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":
@@ -2561,6 +2639,64 @@ def _fmt_tool_duration(seconds: float | None) -> str:
     return f"{mins}m {secs}s" if secs else f"{mins}m"
 
 
+def _mobile_handoff_context(history: list[dict], focus_topic: str = "") -> dict:
+    """Build a compact, non-mutating handoff packet for mobile new-chat flows."""
+
+    visible: list[dict] = []
+    for message in history:
+        if not isinstance(message, dict):
+            continue
+        role = str(message.get("role") or "")
+        if role not in {"user", "assistant", "system"}:
+            continue
+        text = _redact_tui_verbose_text(_coerce_message_text(message.get("content"))).strip()
+        if not text:
+            continue
+        if len(text) > 900:
+            text = f"{text[:900].rstrip()}…"
+        visible.append({"role": role, "text": text})
+
+    recent = visible[-10:]
+    user_messages = [item["text"] for item in visible if item["role"] == "user"]
+    assistant_messages = [item["text"] for item in visible if item["role"] == "assistant"]
+    summary_parts = []
+    if focus_topic:
+        summary_parts.append(f"Focus: {focus_topic}.")
+    if user_messages:
+        summary_parts.append(f"Latest user goal: {user_messages[-1]}")
+    if assistant_messages:
+        summary_parts.append(f"Latest Hermes response: {assistant_messages[-1]}")
+    if not summary_parts:
+        summary_parts.append("Previous chat context is available for continuation.")
+    summary = "\n\n".join(summary_parts)
+    if len(summary) > 2400:
+        summary = f"{summary[:2400].rstrip()}…"
+    return {
+        "summary": summary,
+        "recent_messages": recent,
+        "source_message_count": len(visible),
+        "created_at": time.time(),
+    }
+
+
+def _mobile_handoff_seed(handoff: dict) -> str:
+    recent_lines = []
+    for item in handoff.get("recent_messages") or []:
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or "message")
+        text = str(item.get("text") or "").strip()
+        if text:
+            recent_lines.append(f"{role}: {text}")
+    recent = "\n".join(recent_lines[-8:])
+    return (
+        "Hermes mobile handoff context. Use this as private continuity context; "
+        "do not quote it verbatim unless Leroy asks.\n\n"
+        f"Summary:\n{handoff.get('summary') or ''}\n\n"
+        f"Recent context:\n{recent}"
+    ).strip()
+
+
 def _count_list(obj: object, *path: str) -> int | None:
     cur = obj
     for key in path:
@@ -3683,6 +3819,8 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
     for m in history:
         if not isinstance(m, dict):
             continue
+        if m.get("_mobile_hidden"):
+            continue
         role = m.get("role")
         if role not in {"user", "assistant", "tool", "system"}:
             continue
@@ -3755,7 +3893,10 @@ def _coerce_seed_history(value: Any) -> list[dict]:
         if not isinstance(content, str) or not content.strip():
             continue
 
-        history.append({"role": role, "content": content})
+        entry: dict[str, Any] = {"role": role, "content": content}
+        if item.get("_mobile_hidden"):
+            entry["_mobile_hidden"] = True
+        history.append(entry)
 
     return history
 
@@ -4321,7 +4462,99 @@ def _session_pending_kind(sid: str) -> str:
             continue
         event, _payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
         return str(event).removesuffix(".request")
+    session = _sessions.get(sid)
+    if session:
+        try:
+            from tools.approval import has_blocking_approval
+
+            if has_blocking_approval(str(session.get("session_key") or sid)):
+                return "approval"
+        except Exception:
+            pass
     return ""
+
+
+def list_waiting_input_sessions(limit: int = 20) -> list[dict]:
+    """Return live sessions currently blocked on human input.
+
+    This is a read-only bridge for dashboard REST endpoints. It intentionally
+    reports only in-memory gateway sessions; historical session rows do not
+    know about transient approval/clarify/sudo/secret waits.
+    """
+    with _sessions_lock:
+        sessions_snapshot = {
+            sid: dict(session)
+            for sid, session in _sessions.items()
+            if not session.get("_finalized")
+        }
+
+    pending_rows: list[dict] = []
+    with _prompt_lock:
+        for rid, (sid, _ev) in list(_pending.items()):
+            session = sessions_snapshot.get(sid)
+            if not session:
+                continue
+            event, payload = _pending_prompt_payloads.get(rid, ("input.request", {}))
+            pending_rows.append(
+                {
+                    "kind": str(event).removesuffix(".request"),
+                    "payload": dict(payload or {}),
+                    "session": _session_live_item(sid, session),
+                }
+            )
+
+    try:
+        from tools.approval import list_blocking_gateway_approvals
+
+        by_key = {
+            str(session.get("session_key") or sid): (sid, session)
+            for sid, session in sessions_snapshot.items()
+        }
+        for approval in list_blocking_gateway_approvals():
+            sid_session = by_key.get(str(approval.get("session_key") or ""))
+            if not sid_session:
+                continue
+            sid, session = sid_session
+            pending_rows.append(
+                {
+                    "kind": "approval",
+                    "payload": dict(approval.get("payload") or {}),
+                    "session": _session_live_item(sid, session),
+                }
+            )
+    except Exception:
+        logger.debug("failed to include blocking approvals in waiting snapshot", exc_info=True)
+
+    pending_rows.sort(
+        key=lambda row: float(row.get("session", {}).get("last_active") or 0),
+        reverse=True,
+    )
+    return pending_rows[: max(0, int(limit or 0))]
+
+
+def list_active_work_sessions(limit: int = 20) -> list[dict]:
+    """Return live sessions that are currently starting, working, or waiting."""
+    with _sessions_lock:
+        snapshot = [
+            (sid, dict(session))
+            for sid, session in _sessions.items()
+            if not session.get("_finalized")
+        ]
+
+    rows: list[dict] = []
+    for sid, session in snapshot:
+        status = _session_live_status(sid, session)
+        if status == "idle":
+            continue
+        row = _session_live_item(sid, session)
+        inflight = _inflight_snapshot(session)
+        if inflight:
+            row["inflight"] = inflight
+        row["running"] = bool(session.get("running"))
+        rows.append(row)
+
+    rows.sort(key=lambda row: float(row.get("last_active") or 0), reverse=True)
+    return rows[: max(0, int(limit or 0))]
 
 
 def _session_live_status(sid: str, session: dict) -> str:
@@ -4907,6 +5140,55 @@ def _(rid, params: dict) -> dict:
         if removed:
             session["history_version"] = int(session.get("history_version", 0)) + 1
     return _ok(rid, {"removed": removed})
+
+
+@method("session.handoff_create")
+def _(rid, params: dict) -> dict:
+    session, err = _sess_nowait(params, rid)
+    if err:
+        return err
+    assert session is not None
+    if session.get("running"):
+        return _err(rid, 4009, "session busy — stop the current turn before handoff")
+
+    sid = params.get("session_id", "")
+    focus_topic = str(params.get("focus_topic", "mobile continuation handoff") or "").strip()
+    with session["history_lock"]:
+        source_history = [dict(message) for message in session.get("history", []) if isinstance(message, dict)]
+    if not source_history:
+        return _err(rid, 4008, "nothing to hand off — send a message first")
+
+    handoff = _mobile_handoff_context(source_history, focus_topic)
+    seed = _mobile_handoff_seed(handoff)
+    starter = "I have the context from the previous chat. What should we do next?"
+    create_params = {
+        "cols": int(params.get("cols", session.get("cols", 80)) or 80),
+        "messages": [
+            {"role": "system", "content": seed, "_mobile_hidden": True},
+            {"role": "assistant", "content": starter},
+        ],
+        "title": str(params.get("title") or "Mobile handoff").strip(),
+    }
+    if params.get("profile"):
+        create_params["profile"] = params.get("profile")
+    if params.get("cwd"):
+        create_params["cwd"] = params.get("cwd")
+
+    created = handle_request(
+        {"jsonrpc": "2.0", "id": rid, "method": "session.create", "params": create_params}
+    )
+    if not isinstance(created, dict) or created.get("error"):
+        return created or _err(rid, 5000, "handoff create failed")
+    result = created.get("result")
+    if not isinstance(result, dict):
+        return _err(rid, 5000, "handoff create failed")
+
+    result["source_session_id"] = session.get("session_key") or sid
+    result["handoff"] = handoff
+    # Keep the private seed out of the visible mobile transcript. It remains in
+    # the backend history so the new session has continuity on the next prompt.
+    result["messages"] = [{"role": "assistant", "text": starter}]
+    return created
 
 
 @method("session.compress")

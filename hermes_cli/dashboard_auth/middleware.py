@@ -30,6 +30,25 @@ from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
 
+_MOBILE_TOKEN_HEADER_NAME = "X-Hermes-Mobile-Token"
+_MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
+    "/api/mobile/auth/check",
+    "/api/sessions",
+})
+_MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
+
+
+def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
+    if method.upper() != "GET":
+        return False
+    if path in _MOBILE_TOKEN_READONLY_PATHS:
+        return True
+    if not path.startswith(_MOBILE_TOKEN_SESSION_DETAIL_PREFIX):
+        return False
+    # Allow only read-only session detail and messages endpoints. Keep mutating
+    # session routes (PATCH/DELETE/archive/etc.) protected by dashboard auth.
+    return path.endswith("/messages") or path.count("/") == 3
+
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
 # ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
 # matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
@@ -76,6 +95,23 @@ def _client_ip(request: Request) -> str:
     if fwd:
         return fwd.split(",")[0].strip()
     return request.client.host if request.client else ""
+
+
+def _has_valid_mobile_token(request: Request, *, required_scope: str = "sessions:read") -> bool:
+    raw = request.headers.get(_MOBILE_TOKEN_HEADER_NAME, "")
+    if not raw:
+        return False
+    try:
+        from hermes_cli.mobile_pairing import MobilePairingStore
+
+        result = MobilePairingStore().validate_token(raw, required_scope=required_scope)
+    except Exception:
+        _log.exception("dashboard-auth: mobile token validation failed")
+        return False
+    if result.ok and result.record is not None:
+        request.state.mobile_device = result.record
+        return True
+    return False
 
 
 def _unauth_response(request: Request, *, reason: str) -> Response:
@@ -182,6 +218,11 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     path = request.url.path
+    if (
+        _is_mobile_token_readonly_path(path, request.method)
+        and _has_valid_mobile_token(request, required_scope="sessions:read")
+    ):
+        return await call_next(request)
     if _path_is_public(path):
         return await call_next(request)
 
