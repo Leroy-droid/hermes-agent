@@ -235,3 +235,108 @@ def test_active_work_endpoint_shapes_live_sessions(monkeypatch, dashboard_client
     assert live_only["live_running"] is False
     assert live_only["live_inflight_user"] == "Start this task"
     assert live_only["live_inflight_assistant"] == ""
+
+
+def test_prepare_mobile_live_session_uses_lazy_resume(monkeypatch):
+    import tui_gateway.server as gateway_server
+
+    calls = []
+
+    def fake_resume(rid, params):
+        calls.append(params)
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "session_id": "live-prepared",
+                "resumed": "stored-session",
+                "message_count": 4,
+                "status": "idle",
+            },
+        }
+
+    monkeypatch.setitem(gateway_server._methods, "session.resume", fake_resume)
+    monkeypatch.setattr(
+        gateway_server,
+        "mobile_live_session_status",
+        lambda session_id: {
+            "is_mobile_sendable": True,
+            "live_session_id": "live-prepared",
+            "mobile_send_unavailable_reason": "",
+        },
+    )
+
+    result = gateway_server.prepare_mobile_live_session("stored-session")
+
+    assert result == {
+        "ok": True,
+        "status": "idle",
+        "session_id": "stored-session",
+        "live_session_id": "live-prepared",
+        "is_mobile_sendable": True,
+        "mobile_send_unavailable_reason": "",
+        "message_count": 4,
+    }
+    assert calls == [{"session_id": "stored-session", "lazy": True}]
+
+
+def test_prepare_mobile_live_session_maps_not_found(monkeypatch):
+    import tui_gateway.server as gateway_server
+
+    def fake_resume(rid, params):
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "error": {"code": 4007, "message": "session not found"},
+        }
+
+    monkeypatch.setitem(gateway_server._methods, "session.resume", fake_resume)
+
+    result = gateway_server.prepare_mobile_live_session("missing-session")
+
+    assert result == {
+        "ok": False,
+        "status_code": 404,
+        "detail": "session not found",
+    }
+
+
+def test_prepare_mobile_live_session_reuses_existing_live_session(monkeypatch):
+    import threading
+    import tui_gateway.server as gateway_server
+
+    live_session = {
+        "agent": None,
+        "history_lock": threading.Lock(),
+        "lazy": True,
+        "running": False,
+        "session_key": "stored-session",
+    }
+    with gateway_server._sessions_lock:
+        gateway_server._sessions["live-existing"] = live_session
+    try:
+        def fake_resume(rid, params):
+            return {
+                "jsonrpc": "2.0",
+                "id": rid,
+                "result": {
+                    "session_id": "live-existing",
+                    "resumed": "stored-session",
+                    "message_count": 5,
+                    "status": "idle",
+                },
+            }
+
+        monkeypatch.setitem(gateway_server._methods, "session.resume", fake_resume)
+
+        result = gateway_server.prepare_mobile_live_session("stored-session")
+    finally:
+        with gateway_server._sessions_lock:
+            gateway_server._sessions.pop("live-existing", None)
+
+    assert result["ok"] is True
+    assert result["session_id"] == "stored-session"
+    assert result["live_session_id"] == "live-existing"
+    assert result["is_mobile_sendable"] is True
+    assert result["mobile_send_unavailable_reason"] == ""
+    assert result["message_count"] == 5

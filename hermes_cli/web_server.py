@@ -191,7 +191,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
-_MOBILE_TOKEN_SEND_SUFFIX = "/messages"
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
 
 
 def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
@@ -209,7 +209,9 @@ def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
 def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
     if method.upper() != "POST":
         return False
-    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and path.endswith(_MOBILE_TOKEN_SEND_SUFFIX)
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
+        path.endswith(suffix) for suffix in _MOBILE_TOKEN_SEND_SUFFIXES
+    )
 
 
 _MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read", "messages:send"})
@@ -6820,6 +6822,38 @@ async def check_mobile_auth(request: Request):
     return {
         "ok": True,
         "scope": "sessions:read",
+        "device": _mobile_device_payload(record),
+    }
+
+
+@app.post("/api/mobile/sessions/{session_id}/resume")
+async def resume_mobile_live_session(request: Request, session_id: str):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.prepare_mobile_live_session(session_id)
+    except Exception:
+        _log.exception("POST /api/mobile/sessions/{session_id}/resume failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile live session prepare failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "idle"),
+        "session_id": result.get("session_id", session_id),
+        "live_session_id": result.get("live_session_id", ""),
+        "is_mobile_sendable": bool(result.get("is_mobile_sendable")),
+        "mobile_send_unavailable_reason": str(result.get("mobile_send_unavailable_reason") or ""),
+        "message_count": int(result.get("message_count") or 0),
         "device": _mobile_device_payload(record),
     }
 

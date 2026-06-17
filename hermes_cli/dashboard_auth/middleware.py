@@ -36,6 +36,8 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
     "/api/sessions",
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
+_MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
 
 
 def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
@@ -48,6 +50,14 @@ def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
     # Allow only read-only session detail and messages endpoints. Keep mutating
     # session routes (PATCH/DELETE/archive/etc.) protected by dashboard auth.
     return path.endswith("/messages") or path.count("/") == 3
+
+
+def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
+    if method.upper() != "POST":
+        return False
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
+        path.endswith(suffix) for suffix in _MOBILE_TOKEN_SEND_SUFFIXES
+    )
 
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
 # ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
@@ -221,6 +231,11 @@ async def gated_auth_middleware(
     if (
         _is_mobile_token_readonly_path(path, request.method)
         and _has_valid_mobile_token(request, required_scope="sessions:read")
+    ):
+        return await call_next(request)
+    if (
+        _is_mobile_token_send_path(path, request.method)
+        and _has_valid_mobile_token(request, required_scope="messages:send")
     ):
         return await call_next(request)
     if _path_is_public(path):
@@ -406,4 +421,3 @@ def _attempt_refresh(request: Request, *, refresh_token):
         if new_session is not None:
             return new_session, provider.name
     return None
-

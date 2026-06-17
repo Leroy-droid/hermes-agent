@@ -1076,6 +1076,62 @@ def mobile_live_session_status(stored_session_id: str) -> dict:
     }
 
 
+def prepare_mobile_live_session(stored_session_id: str) -> dict:
+    """Prepare a lazy live wrapper for an existing stored session.
+
+    This intentionally routes through the registered ``session.resume`` JSON-RPC
+    handler with ``lazy=True``. That path reopens/registers the stored
+    conversation for live follow-up without submitting prompt text or starting
+    an agent run.
+    """
+    requested = str(stored_session_id or "").strip()
+    if not requested:
+        return {"ok": False, "status_code": 400, "detail": "session_id required"}
+
+    handler = _methods.get("session.resume")
+    if handler is None:
+        return {"ok": False, "status_code": 500, "detail": "session.resume unavailable"}
+
+    rid = f"mobile_prepare_{uuid.uuid4().hex[:12]}"
+    try:
+        response = handler(rid, {"session_id": requested, "lazy": True})
+    except Exception:
+        logger.exception("prepare_mobile_live_session failed")
+        return {"ok": False, "status_code": 500, "detail": "Internal server error"}
+
+    error = response.get("error") if isinstance(response, dict) else None
+    if error:
+        code = int(error.get("code") or 5000)
+        detail = str(error.get("message") or "mobile live session prepare failed")
+        status_code = 500
+        if code == 4006:
+            status_code = 400
+        elif code == 4007:
+            status_code = 404
+        elif code == 4090:
+            status_code = 409
+        elif code >= 5000:
+            status_code = 500
+        return {"ok": False, "status_code": status_code, "detail": detail}
+
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return {"ok": False, "status_code": 500, "detail": "invalid session.resume response"}
+
+    live_sid = str(result.get("session_id") or "")
+    stored_sid = str(result.get("resumed") or result.get("session_key") or requested)
+    status = mobile_live_session_status(stored_sid)
+    return {
+        "ok": True,
+        "status": str(result.get("status") or "idle"),
+        "session_id": stored_sid,
+        "live_session_id": str(status.get("live_session_id") or live_sid),
+        "is_mobile_sendable": bool(status.get("is_mobile_sendable")),
+        "mobile_send_unavailable_reason": str(status.get("mobile_send_unavailable_reason") or ""),
+        "message_count": int(result.get("message_count") or 0),
+    }
+
+
 def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> dict:
     """Submit a native-mobile text prompt into an existing live gateway session.
 
