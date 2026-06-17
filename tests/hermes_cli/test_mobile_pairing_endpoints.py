@@ -412,6 +412,49 @@ def test_mobile_prepare_scope_returns_gateway_bridge_errors(
     assert response.json()["detail"] == "active session limit reached"
 
 
+def test_mobile_prepare_scope_maps_missing_session_to_404(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+    import importlib
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                prepare_mobile_live_session=lambda session_id: {
+                    "ok": False,
+                    "status_code": 404,
+                    "detail": "session not found",
+                }
+            )
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPad",
+            "platform": "ipados",
+            "scopes": ["sessions:read", "messages:send"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/missing-session/resume",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+    )
+
+    assert response.status_code == 404
+    assert response.json()["detail"] == "session not found"
+
+
 def test_mobile_send_scope_submits_to_live_gateway_bridge(
     monkeypatch,
     dashboard_client,

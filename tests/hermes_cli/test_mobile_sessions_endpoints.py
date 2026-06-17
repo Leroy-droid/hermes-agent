@@ -340,3 +340,48 @@ def test_prepare_mobile_live_session_reuses_existing_live_session(monkeypatch):
     assert result["is_mobile_sendable"] is True
     assert result["mobile_send_unavailable_reason"] == ""
     assert result["message_count"] == 5
+
+
+def test_prepare_mobile_live_session_is_idempotent_for_existing_live_session(monkeypatch):
+    import threading
+    import tui_gateway.server as gateway_server
+
+    calls = []
+    live_session = {
+        "agent": None,
+        "history_lock": threading.Lock(),
+        "lazy": True,
+        "running": False,
+        "session_key": "stored-session",
+    }
+
+    def fake_resume(rid, params):
+        calls.append(params)
+        return {
+            "jsonrpc": "2.0",
+            "id": rid,
+            "result": {
+                "session_id": "live-existing",
+                "resumed": "stored-session",
+                "message_count": 5,
+                "status": "idle",
+            },
+        }
+
+    monkeypatch.setitem(gateway_server._methods, "session.resume", fake_resume)
+    with gateway_server._sessions_lock:
+        gateway_server._sessions["live-existing"] = live_session
+    try:
+        first = gateway_server.prepare_mobile_live_session("stored-session")
+        second = gateway_server.prepare_mobile_live_session("stored-session")
+    finally:
+        with gateway_server._sessions_lock:
+            gateway_server._sessions.pop("live-existing", None)
+
+    assert first["ok"] is True
+    assert second["ok"] is True
+    assert first["live_session_id"] == second["live_session_id"] == "live-existing"
+    assert calls == [
+        {"session_id": "stored-session", "lazy": True},
+        {"session_id": "stored-session", "lazy": True},
+    ]
