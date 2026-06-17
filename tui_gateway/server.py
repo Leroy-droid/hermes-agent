@@ -1029,6 +1029,84 @@ def _sess(params, rid):
     return (s, _wait_agent(s, rid))
 
 
+def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> dict:
+    """Submit a native-mobile text prompt into an existing live gateway session.
+
+    The mobile REST API sees persistent DB session ids. The gateway runner uses
+    short live websocket ids plus ``session_key`` for the stored DB row. This
+    helper deliberately accepts only a currently live session whose live id or
+    stored ``session_key`` matches the requested id; it does not resume old
+    transcripts or create hidden sessions on mobile's behalf.
+    """
+    requested = str(stored_session_id or "").strip()
+    prompt = str(text or "").strip()
+    if not requested:
+        return {"ok": False, "status_code": 400, "detail": "session_id required"}
+    if not prompt:
+        return {"ok": False, "status_code": 400, "detail": "text required"}
+    if len(prompt) > 4000:
+        return {"ok": False, "status_code": 400, "detail": "text must be at most 4000 characters"}
+
+    live_sid = ""
+    session = None
+    with _sessions_lock:
+        for sid, candidate in _sessions.items():
+            if sid == requested or str(candidate.get("session_key") or "") == requested:
+                live_sid = sid
+                session = candidate
+                break
+
+    if session is None:
+        return {
+            "ok": False,
+            "status_code": 404,
+            "detail": "session is not live in the current Hermes desktop gateway",
+        }
+
+    rid = f"mobile_{uuid.uuid4().hex[:12]}"
+    with session["history_lock"]:
+        if session.get("running"):
+            return {"ok": False, "status_code": 409, "detail": "session busy"}
+        if session.get("lazy") and _child_run_active(str(session.get("session_key") or "")):
+            return {
+                "ok": False,
+                "status_code": 409,
+                "detail": "subagent still running — wait for it to finish",
+            }
+        session["running"] = True
+        session["last_active"] = time.time()
+        _start_inflight_turn(session, prompt)
+
+    _ensure_session_db_row(session)
+    _start_agent_build(live_sid, session)
+
+    def run_after_agent_ready() -> None:
+        err = _wait_agent(session, rid)
+        if err:
+            _emit(
+                "error",
+                live_sid,
+                {
+                    "message": err.get("error", {}).get(
+                        "message", "agent initialization failed"
+                    )
+                },
+            )
+            with session["history_lock"]:
+                session["running"] = False
+                _clear_inflight_turn(session)
+            return
+        _run_prompt_submit(rid, live_sid, session, prompt)
+
+    threading.Thread(target=run_after_agent_ready, daemon=True).start()
+    return {
+        "ok": True,
+        "status": "streaming",
+        "session_id": str(session.get("session_key") or requested),
+        "live_session_id": live_sid,
+    }
+
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":

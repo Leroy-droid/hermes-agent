@@ -250,3 +250,121 @@ def test_mobile_token_can_read_session_detail_and_messages_but_not_delete(
         "Showing read-only detail.",
     ]
     assert delete.status_code == 401
+
+
+def test_mobile_readonly_token_cannot_send_session_message(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={"device_name": "Leroy iPhone", "platform": "ios"},
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/messages",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json={"text": "This must not send."},
+    )
+
+    assert response.status_code == 401
+
+
+def test_mobile_send_scope_submits_to_live_gateway_bridge(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+    import importlib
+
+    calls = []
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                submit_mobile_prompt_to_live_session=lambda session_id, text: calls.append(
+                    {"session_id": session_id, "text": text}
+                ) or {
+                    "ok": True,
+                    "status": "streaming",
+                    "session_id": session_id,
+                    "live_session_id": "live-123",
+                }
+            )
+        return original_import_module(name)
+
+    original_import_module = importlib.import_module
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send"],
+        },
+    )
+    assert issued.status_code == 200
+    body = issued.json()
+    assert body["device"]["scopes"] == ["messages:send", "sessions:read"]
+    token = body["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/messages",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json={"text": "Hello from native mobile."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "streaming"
+    assert response.json()["live_session_id"] == "live-123"
+    assert calls == [{"session_id": "live-session", "text": "Hello from native mobile."}]
+
+
+def test_mobile_send_scope_returns_gateway_bridge_errors(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+    import importlib
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                submit_mobile_prompt_to_live_session=lambda session_id, text: {
+                    "ok": False,
+                    "status_code": 404,
+                    "detail": "session is not live in the current Hermes desktop gateway",
+                }
+            )
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPad",
+            "platform": "ipados",
+            "scopes": ["sessions:read", "messages:send"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/offline-session/messages",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json={"text": "Hello."},
+    )
+
+    assert response.status_code == 404
+    assert "not live" in response.json()["detail"]

@@ -190,6 +190,8 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
     "/api/sessions",
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
+_MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
+_MOBILE_TOKEN_SEND_SUFFIX = "/messages"
 
 
 def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
@@ -202,7 +204,15 @@ def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
     # Allow only read-only session detail and messages endpoints. Keep mutating
     # session routes (PATCH/DELETE/archive/etc.) protected by dashboard auth.
     return path.endswith("/messages") or path.count("/") == 3
-_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read"})
+
+
+def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
+    if method.upper() != "POST":
+        return False
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and path.endswith(_MOBILE_TOKEN_SEND_SUFFIX)
+
+
+_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read", "messages:send"})
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -270,9 +280,10 @@ def _has_valid_mobile_token(request: Request, *, required_scope: str = "sessions
     """True if request carries a valid scoped native-device token.
 
     Mobile tokens are separate from the dashboard SPA token. They are intended
-    for native iPhone/iPad/Mac clients and are only accepted on a very small
-    read-only path allowlist until write scopes have their own confirmation
-    and revocation story.
+    for native iPhone/iPad/Mac clients and are only accepted on very small
+    path allowlists. Read routes require ``sessions:read``; the native send
+    route requires the separate ``messages:send`` scope and still routes
+    through the existing live-session prompt runner.
     """
     raw = request.headers.get(_MOBILE_TOKEN_HEADER_NAME, "")
     if not raw:
@@ -312,6 +323,11 @@ def _require_token(request: Request) -> None:
     if (
         _is_mobile_token_readonly_path(request.url.path, request.method)
         and _has_valid_mobile_token(request, required_scope="sessions:read")
+    ):
+        return
+    if (
+        _is_mobile_token_send_path(request.url.path, request.method)
+        and _has_valid_mobile_token(request, required_scope="messages:send")
     ):
         return
     if getattr(request.app.state, "auth_required", False):
@@ -496,11 +512,15 @@ async def auth_middleware(request: Request, call_next):
         return await call_next(request)
     path = request.url.path
     if path.startswith("/api/") and path not in _PUBLIC_API_PATHS:
-        mobile_ok = (
+        mobile_read_ok = (
             _is_mobile_token_readonly_path(path, request.method)
             and _has_valid_mobile_token(request, required_scope="sessions:read")
         )
-        if not mobile_ok and not _has_valid_session_token(request):
+        mobile_send_ok = (
+            _is_mobile_token_send_path(path, request.method)
+            and _has_valid_mobile_token(request, required_scope="messages:send")
+        )
+        if not (mobile_read_ok or mobile_send_ok) and not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -6628,6 +6648,10 @@ class MobilePairingRevoke(BaseModel):
     device_id: str
 
 
+class MobileSessionMessageSend(BaseModel):
+    text: str
+
+
 def _mobile_device_payload(record: Any) -> Dict[str, Any]:
     return {
         "device_id": record.device_id,
@@ -6700,6 +6724,40 @@ async def check_mobile_auth(request: Request):
     return {
         "ok": True,
         "scope": "sessions:read",
+        "device": _mobile_device_payload(record),
+    }
+
+
+@app.post("/api/mobile/sessions/{session_id}/messages")
+async def send_mobile_session_message(request: Request, session_id: str, body: MobileSessionMessageSend):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    text = str(body.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text required")
+    if len(text) > 4000:
+        raise HTTPException(status_code=400, detail="text must be at most 4000 characters")
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.submit_mobile_prompt_to_live_session(session_id, text)
+    except Exception:
+        _log.exception("POST /api/mobile/sessions/{session_id}/messages failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile send failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "streaming"),
+        "session_id": result.get("session_id", session_id),
+        "live_session_id": result.get("live_session_id", ""),
         "device": _mobile_device_payload(record),
     }
 
