@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -550,3 +551,222 @@ def test_mobile_send_scope_returns_gateway_bridge_errors(
 
     assert response.status_code == 404
     assert "not live" in response.json()["detail"]
+
+
+def _upload_payload(**overrides):
+    payload = {
+        "filename": "note.txt",
+        "content_type": "text/plain",
+        "kind": "file",
+        "data_base64": base64.b64encode(b"mobile upload smoke").decode("ascii"),
+        "caption": "Attach this to the live session.",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def test_mobile_upload_route_requires_token(unauthenticated_client):
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        json=_upload_payload(),
+    )
+
+    assert response.status_code == 401
+
+
+def test_mobile_upload_route_requires_files_upload_scope(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json=_upload_payload(),
+    )
+
+    assert response.status_code == 401
+
+
+def test_mobile_upload_route_requires_messages_send_scope(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json=_upload_payload(),
+    )
+
+    assert response.status_code == 403
+    assert "messages:send" in response.json()["detail"]
+
+
+def test_mobile_upload_route_stores_file_and_submits_attachment_prompt(
+    monkeypatch,
+    tmp_path,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+    import importlib
+
+    calls = []
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                submit_mobile_prompt_to_live_session=lambda session_id, text: calls.append(
+                    {"session_id": session_id, "text": text}
+                ) or {
+                    "ok": True,
+                    "status": "streaming",
+                    "session_id": session_id,
+                    "live_session_id": "live-upload-123",
+                }
+            )
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json=_upload_payload(filename="../../voice note.m4a", content_type="audio/mp4", kind="voice"),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ok"] is True
+    assert body["status"] == "streaming"
+    assert body["live_session_id"] == "live-upload-123"
+    assert body["upload"]["kind"] == "voice"
+    assert body["upload"]["filename"] == "_.._voice note.m4a"
+    stored_path = tmp_path / "mobile_uploads" / "live-session"
+    stored_files = list(stored_path.glob("*-_.._voice note.m4a"))
+    assert len(stored_files) == 1
+    assert stored_files[0].read_bytes() == b"mobile upload smoke"
+    assert calls[0]["session_id"] == "live-session"
+    assert "Voice note upload from mobile is confirmed." in calls[0]["text"]
+    assert str(stored_files[0]) in calls[0]["text"]
+    assert "Attach this to the live session." in calls[0]["text"]
+
+
+def test_mobile_upload_token_bypasses_oauth_gate_and_route_requires_send_scope(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    previous = getattr(app.state, "auth_required", False)
+    app.state.auth_required = True
+    try:
+        response = unauthenticated_client.post(
+            "/api/mobile/sessions/live-session/uploads",
+            headers={_MOBILE_TOKEN_HEADER_NAME: token},
+            json=_upload_payload(),
+        )
+    finally:
+        app.state.auth_required = previous
+
+    assert response.status_code == 403
+    assert "messages:send" in response.json()["detail"]
+
+
+def test_mobile_upload_route_rejects_invalid_base64(
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json=_upload_payload(data_base64="not base64!!"),
+    )
+
+    assert response.status_code == 400
+    assert "invalid base64" in response.json()["detail"]
+
+
+def test_mobile_upload_route_rejects_oversize_payload(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from hermes_cli import web_server
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME
+
+    monkeypatch.setattr(web_server, "_MOBILE_UPLOAD_MAX_BYTES", 4)
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    response = unauthenticated_client.post(
+        "/api/mobile/sessions/live-session/uploads",
+        headers={_MOBILE_TOKEN_HEADER_NAME: token},
+        json=_upload_payload(data_base64=base64.b64encode(b"too large").decode("ascii")),
+    )
+
+    assert response.status_code == 413

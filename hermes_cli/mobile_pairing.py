@@ -33,7 +33,7 @@ DEVICES_FILENAME = "devices.json"
 TOKEN_BYTES = 32
 SALT_BYTES = 16
 DEFAULT_SCOPES = frozenset({"sessions:read"})
-SUPPORTED_SCOPES = frozenset({"sessions:read", "messages:send"})
+SUPPORTED_SCOPES = frozenset({"sessions:read", "messages:send", "files:upload"})
 
 
 @dataclass(frozen=True)

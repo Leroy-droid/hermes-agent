@@ -75,6 +75,18 @@ def test_revoke_device_invalidates_token(tmp_path):
     assert all_devices[0].revoked_at is not None
 
 
+def test_files_upload_scope_is_supported(tmp_path):
+    store = MobilePairingStore(root=tmp_path, now=lambda: 1000.0)
+    issued = store.issue_device_token(
+        device_name="Leroy iPhone",
+        platform="ios",
+        scopes=["sessions:read", "messages:send", "files:upload"],
+    )
+
+    assert store.validate_token(issued.token, required_scope="files:upload").ok is True
+    assert store.validate_token(issued.token, required_scope="messages:send").ok is True
+
+
 def test_labels_are_trimmed_and_empty_scopes_fallback(tmp_path):
     store = MobilePairingStore(root=tmp_path, now=lambda: 1000.0)
 

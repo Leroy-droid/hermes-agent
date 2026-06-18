@@ -38,6 +38,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
 _MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
+_MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 
 def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
@@ -57,6 +58,14 @@ def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
         return False
     return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
         path.endswith(suffix) for suffix in _MOBILE_TOKEN_SEND_SUFFIXES
+    )
+
+
+def _is_mobile_token_upload_path(path: str, method: str = "POST") -> bool:
+    if method.upper() != "POST":
+        return False
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
+        path.endswith(suffix) for suffix in _MOBILE_TOKEN_UPLOAD_SUFFIXES
     )
 
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
@@ -236,6 +245,11 @@ async def gated_auth_middleware(
     if (
         _is_mobile_token_send_path(path, request.method)
         and _has_valid_mobile_token(request, required_scope="messages:send")
+    ):
+        return await call_next(request)
+    if (
+        _is_mobile_token_upload_path(path, request.method)
+        and _has_valid_mobile_token(request, required_scope="files:upload")
     ):
         return await call_next(request)
     if _path_is_public(path):

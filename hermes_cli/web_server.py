@@ -192,6 +192,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
 _MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
+_MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 
 def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
@@ -214,7 +215,15 @@ def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
     )
 
 
-_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read", "messages:send"})
+def _is_mobile_token_upload_path(path: str, method: str = "POST") -> bool:
+    if method.upper() != "POST":
+        return False
+    return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
+        path.endswith(suffix) for suffix in _MOBILE_TOKEN_UPLOAD_SUFFIXES
+    )
+
+
+_MOBILE_ALLOWED_SCOPES: frozenset[str] = frozenset({"sessions:read", "messages:send", "files:upload"})
 
 # In-browser Chat tab (/chat, /api/pty, /api/ws, …).  Always enabled: the
 # desktop app and the dashboard's own Chat tab both drive the agent over the
@@ -358,6 +367,11 @@ def _require_token(request: Request) -> None:
     if (
         _is_mobile_token_send_path(request.url.path, request.method)
         and _has_valid_mobile_token(request, required_scope="messages:send")
+    ):
+        return
+    if (
+        _is_mobile_token_upload_path(request.url.path, request.method)
+        and _has_valid_mobile_token(request, required_scope="files:upload")
     ):
         return
     if getattr(request.app.state, "auth_required", False):
@@ -550,7 +564,11 @@ async def auth_middleware(request: Request, call_next):
             _is_mobile_token_send_path(path, request.method)
             and _has_valid_mobile_token(request, required_scope="messages:send")
         )
-        if not (mobile_read_ok or mobile_send_ok) and not _has_valid_session_token(request):
+        mobile_upload_ok = (
+            _is_mobile_token_upload_path(path, request.method)
+            and _has_valid_mobile_token(request, required_scope="files:upload")
+        )
+        if not (mobile_read_ok or mobile_send_ok or mobile_upload_ok) and not _has_valid_session_token(request):
             return JSONResponse(
                 status_code=401,
                 content={"detail": "Unauthorized"},
@@ -6750,6 +6768,79 @@ class MobileSessionMessageSend(BaseModel):
     text: str
 
 
+class MobileSessionUploadSend(BaseModel):
+    filename: str
+    content_type: Optional[str] = None
+    kind: str = "file"
+    data_base64: str
+    caption: Optional[str] = None
+
+
+_MOBILE_UPLOAD_MAX_BYTES = 25 * 1024 * 1024
+_MOBILE_UPLOAD_ALLOWED_KINDS = frozenset({"file", "photo", "voice"})
+
+
+def _safe_mobile_upload_filename(filename: str, fallback: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9._ -]", "_", str(filename or "").strip())
+    cleaned = cleaned.strip(" .")
+    if not cleaned:
+        cleaned = fallback
+    return cleaned[:160]
+
+
+def _store_mobile_upload(session_id: str, body: MobileSessionUploadSend) -> Dict[str, Any]:
+    kind = str(body.kind or "file").strip().lower()
+    if kind not in _MOBILE_UPLOAD_ALLOWED_KINDS:
+        raise HTTPException(status_code=400, detail="unsupported upload kind")
+    try:
+        payload = base64.b64decode(str(body.data_base64 or ""), validate=True)
+    except binascii.Error:
+        raise HTTPException(status_code=400, detail="invalid base64 upload payload")
+    if not payload:
+        raise HTTPException(status_code=400, detail="upload payload required")
+    if len(payload) > _MOBILE_UPLOAD_MAX_BYTES:
+        raise HTTPException(status_code=413, detail="upload must be at most 25 MB")
+
+    upload_id = secrets.token_urlsafe(12)
+    filename = _safe_mobile_upload_filename(body.filename, f"mobile-{kind}-{upload_id}")
+    content_type = str(body.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream")[:120]
+    root = get_hermes_home() / "mobile_uploads" / _safe_mobile_upload_filename(session_id, "session")
+    root.mkdir(parents=True, exist_ok=True)
+    path = root / f"{upload_id}-{filename}"
+    path.write_bytes(payload)
+    return {
+        "upload_id": upload_id,
+        "filename": filename,
+        "content_type": content_type,
+        "kind": kind,
+        "size_bytes": len(payload),
+        "path": str(path),
+    }
+
+
+def _mobile_upload_prompt(upload: Dict[str, Any], caption: Optional[str]) -> str:
+    label = {
+        "photo": "Photo upload",
+        "voice": "Voice note upload",
+        "file": "File upload",
+    }.get(str(upload.get("kind") or "file"), "File upload")
+    lines = [
+        f"{label} from mobile is confirmed.",
+        f"Filename: {upload.get('filename')}",
+        f"Content type: {upload.get('content_type')}",
+        f"Size: {upload.get('size_bytes')} bytes",
+        f"Local path on Mac: {upload.get('path')}",
+    ]
+    cleaned_caption = str(caption or "").strip()
+    if cleaned_caption:
+        lines.append(f"Caption/transcript: {cleaned_caption[:4000]}")
+    return "\n".join(lines)
+
+
+def _mobile_token_has_scope(request: Request, scope: str) -> bool:
+    return _has_valid_mobile_token(request, required_scope=scope)
+
+
 def _mobile_device_payload(record: Any) -> Dict[str, Any]:
     return {
         "device_id": record.device_id,
@@ -6854,6 +6945,43 @@ async def resume_mobile_live_session(request: Request, session_id: str):
         "is_mobile_sendable": bool(result.get("is_mobile_sendable")),
         "mobile_send_unavailable_reason": str(result.get("mobile_send_unavailable_reason") or ""),
         "message_count": int(result.get("message_count") or 0),
+        "device": _mobile_device_payload(record),
+    }
+
+
+@app.post("/api/mobile/sessions/{session_id}/uploads")
+async def upload_mobile_session_attachment(request: Request, session_id: str, body: MobileSessionUploadSend):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _mobile_token_has_scope(request, "files:upload"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    if not _mobile_token_has_scope(request, "messages:send"):
+        raise HTTPException(status_code=403, detail="messages:send scope required")
+
+    upload = _store_mobile_upload(session_id, body)
+    prompt = _mobile_upload_prompt(upload, body.caption)
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.submit_mobile_prompt_to_live_session(session_id, prompt)
+    except HTTPException:
+        raise
+    except Exception:
+        _log.exception("POST /api/mobile/sessions/{session_id}/uploads failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile upload send failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "streaming"),
+        "session_id": result.get("session_id", session_id),
+        "live_session_id": result.get("live_session_id", ""),
+        "upload": upload,
         "device": _mobile_device_payload(record),
     }
 
