@@ -7187,6 +7187,106 @@ async def get_session_latest_descendant(session_id: str):
         "changed": bool(path and latest != path[0]),
     }
 
+_MEDIA_DIRECTIVE_RE = re.compile(r"(?m)(?:^|\s)MEDIA:(?P<target>\S+)")
+_MARKDOWN_IMAGE_RE = re.compile(r"!\[(?P<label>[^\]]*)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MARKDOWN_LINK_RE = re.compile(r"(?<!!)\[(?P<label>[^\]]+)\]\((?P<target>[^)\s]+)(?:\s+\"[^\"]*\")?\)")
+_MEDIA_EXTENSIONS = frozenset({
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif",
+    ".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac",
+    ".mp4", ".mov", ".webm",
+    ".pdf", ".txt", ".md", ".csv", ".json", ".zip",
+})
+
+
+def _mobile_message_media_kind(filename: str, content_type: str = "") -> str:
+    content_type = str(content_type or "").lower()
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("audio/"):
+        return "audio"
+    if content_type.startswith("video/"):
+        return "video"
+    suffix = Path(urllib.parse.urlparse(str(filename or "")).path).suffix.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".heic", ".heif"}:
+        return "image"
+    if suffix in {".mp3", ".m4a", ".aac", ".wav", ".ogg", ".flac"}:
+        return "audio"
+    if suffix in {".mp4", ".mov", ".webm"}:
+        return "video"
+    return "file"
+
+
+def _mobile_message_media_filename(target: str, label: str = "") -> str:
+    parsed = urllib.parse.urlparse(str(target or ""))
+    name = Path(urllib.parse.unquote(parsed.path or "")).name
+    cleaned_label = str(label or "").strip()
+    return name or cleaned_label or "attachment"
+
+
+def _mobile_message_media_item(target: str, *, label: str = "", source: str = "link") -> Optional[Dict[str, Any]]:
+    target = str(target or "").strip().strip("<>")
+    if not target:
+        return None
+    parsed = urllib.parse.urlparse(target)
+    scheme = parsed.scheme.lower()
+    is_remote = scheme in {"http", "https"}
+    is_media_directive = source == "media"
+    suffix = Path(urllib.parse.unquote(parsed.path or target)).suffix.lower()
+    content_type = mimetypes.guess_type(parsed.path or target)[0] or ""
+    if not is_media_directive and not is_remote and suffix not in _MEDIA_EXTENSIONS:
+        return None
+    if not is_media_directive and is_remote and suffix and suffix not in _MEDIA_EXTENSIONS:
+        return None
+    filename = _mobile_message_media_filename(target, label)
+    item: Dict[str, Any] = {
+        "kind": _mobile_message_media_kind(filename, content_type),
+        "filename": filename,
+        "content_type": content_type or None,
+        "label": str(label or "").strip() or None,
+        "source": "remote" if is_remote else ("local" if is_media_directive else "link"),
+    }
+    if is_remote:
+        item["url"] = target
+    else:
+        item["path"] = target
+    return {key: value for key, value in item.items() if value not in (None, "")}
+
+
+def _mobile_message_media_items(message: Dict[str, Any]) -> List[Dict[str, Any]]:
+    content = message.get("content")
+    if not isinstance(content, str) or not content:
+        return []
+    items: List[Dict[str, Any]] = []
+    seen: set[Tuple[str, str]] = set()
+
+    def add(item: Optional[Dict[str, Any]]) -> None:
+        if not item:
+            return
+        key = (str(item.get("url") or item.get("path") or ""), str(item.get("kind") or ""))
+        if key[0] and key not in seen:
+            seen.add(key)
+            items.append(item)
+
+    for match in _MEDIA_DIRECTIVE_RE.finditer(content):
+        add(_mobile_message_media_item(match.group("target"), source="media"))
+    for match in _MARKDOWN_IMAGE_RE.finditer(content):
+        add(_mobile_message_media_item(match.group("target"), label=match.group("label"), source="image"))
+    for match in _MARKDOWN_LINK_RE.finditer(content):
+        add(_mobile_message_media_item(match.group("target"), label=match.group("label"), source="link"))
+    return items
+
+
+def _with_mobile_message_media(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    for message in messages:
+        row = dict(message)
+        media_items = _mobile_message_media_items(row)
+        if media_items:
+            row["media_items"] = media_items
+        enriched.append(row)
+    return enriched
+
+
 @app.get("/api/sessions/{session_id}/messages")
 async def get_session_messages(session_id: str, profile: Optional[str] = None):
     db = _open_session_db_for_profile(profile)
@@ -7195,7 +7295,7 @@ async def get_session_messages(session_id: str, profile: Optional[str] = None):
         if not sid:
             raise HTTPException(status_code=404, detail="Session not found")
         sid = db.resolve_resume_session_id(sid)
-        messages = db.get_messages(sid)
+        messages = _with_mobile_message_media(db.get_messages(sid))
         return {"session_id": sid, "messages": messages}
     finally:
         db.close()

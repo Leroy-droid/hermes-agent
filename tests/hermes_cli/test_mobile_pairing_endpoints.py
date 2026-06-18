@@ -236,7 +236,10 @@ def test_mobile_token_can_read_session_detail_and_messages_but_not_delete(
         def get_messages(self, session_id):
             return [
                 {"role": "user", "content": "Read this only."},
-                {"role": "assistant", "content": "Showing read-only detail."},
+                {
+                    "role": "assistant",
+                    "content": "Showing read-only detail.\nMEDIA:/tmp/hermes/chart.png\n![voice](https://example.com/voice.m4a)",
+                },
             ]
 
         def delete_session(self, session_id):
@@ -266,9 +269,27 @@ def test_mobile_token_can_read_session_detail_and_messages_but_not_delete(
     assert detail.status_code == 200
     assert detail.json()["id"] == "mobile-detail-session"
     assert messages.status_code == 200
-    assert [m["content"] for m in messages.json()["messages"]] == [
+    message_rows = messages.json()["messages"]
+    assert [m["content"] for m in message_rows] == [
         "Read this only.",
-        "Showing read-only detail.",
+        "Showing read-only detail.\nMEDIA:/tmp/hermes/chart.png\n![voice](https://example.com/voice.m4a)",
+    ]
+    assert message_rows[1]["media_items"] == [
+        {
+            "kind": "image",
+            "filename": "chart.png",
+            "content_type": "image/png",
+            "source": "local",
+            "path": "/tmp/hermes/chart.png",
+        },
+        {
+            "kind": "audio",
+            "filename": "voice.m4a",
+            "content_type": "audio/mp4a-latm",
+            "label": "voice",
+            "source": "remote",
+            "url": "https://example.com/voice.m4a",
+        },
     ]
     assert delete.status_code == 401
 
@@ -716,6 +737,55 @@ def test_mobile_upload_token_bypasses_oauth_gate_and_route_requires_send_scope(
 
     assert response.status_code == 403
     assert "messages:send" in response.json()["detail"]
+
+
+def test_mobile_upload_token_bypasses_oauth_gate_with_full_scope(
+    monkeypatch,
+    dashboard_client,
+    unauthenticated_client,
+):
+    from types import SimpleNamespace
+    from hermes_cli.web_server import _MOBILE_TOKEN_HEADER_NAME, app
+    import importlib
+
+    original_import_module = importlib.import_module
+
+    def fake_import_module(name):
+        if name == "tui_gateway.server":
+            return SimpleNamespace(
+                submit_mobile_prompt_to_live_session=lambda session_id, text: {
+                    "ok": True,
+                    "status": "streaming",
+                    "session_id": session_id,
+                    "live_session_id": "live-upload-oauth-123",
+                }
+            )
+        return original_import_module(name)
+
+    monkeypatch.setattr(importlib, "import_module", fake_import_module)
+    issued = dashboard_client.post(
+        "/api/mobile/pairing/approve",
+        json={
+            "device_name": "Leroy iPhone",
+            "platform": "ios",
+            "scopes": ["sessions:read", "messages:send", "files:upload"],
+        },
+    )
+    token = issued.json()["token"]
+
+    previous = getattr(app.state, "auth_required", False)
+    app.state.auth_required = True
+    try:
+        response = unauthenticated_client.post(
+            "/api/mobile/sessions/live-session/uploads",
+            headers={_MOBILE_TOKEN_HEADER_NAME: token},
+            json=_upload_payload(),
+        )
+    finally:
+        app.state.auth_required = previous
+
+    assert response.status_code == 200
+    assert response.json()["live_session_id"] == "live-upload-oauth-123"
 
 
 def test_mobile_upload_route_rejects_invalid_base64(
