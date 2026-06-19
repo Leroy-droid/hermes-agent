@@ -630,6 +630,12 @@ def test_rename_mobile_session_endpoint_updates_title(monkeypatch, dashboard_cli
     finally:
         db.close()
 
+    list_resp = dashboard_client.get("/api/sessions?limit=10&offset=0")
+    assert list_resp.status_code == 200
+    listed = [row for row in list_resp.json()["sessions"] if row["id"] == "rename-mobile"]
+    assert listed
+    assert listed[0]["title"] == "Renamed from iPhone"
+
 
 def test_create_mobile_handoff_session_uses_compact_seed(monkeypatch):
     import tui_gateway.server as gateway_server
