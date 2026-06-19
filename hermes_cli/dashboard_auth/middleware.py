@@ -37,7 +37,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
-_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff"})
 _MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 
@@ -56,6 +56,8 @@ def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
 def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
     if method.upper() != "POST":
         return False
+    if path.rstrip("/") == _MOBILE_TOKEN_SEND_PREFIX.rstrip("/"):
+        return True
     return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
         path.endswith(suffix) for suffix in _MOBILE_TOKEN_SEND_SUFFIXES
     )

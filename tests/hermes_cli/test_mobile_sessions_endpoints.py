@@ -396,6 +396,15 @@ def test_mobile_send_path_allows_new_session_and_handoff_routes():
     assert _is_mobile_token_send_path("/api/mobile/sessions", "GET") is False
 
 
+def test_dashboard_auth_mobile_send_path_allows_new_session_and_handoff_routes():
+    from hermes_cli.dashboard_auth.middleware import _is_mobile_token_send_path
+
+    assert _is_mobile_token_send_path("/api/mobile/sessions", "POST") is True
+    assert _is_mobile_token_send_path("/api/mobile/sessions/abc/handoff", "POST") is True
+    assert _is_mobile_token_send_path("/api/mobile/sessions/abc/uploads", "POST") is False
+    assert _is_mobile_token_send_path("/api/mobile/sessions", "GET") is False
+
+
 def test_create_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_client):
     import hermes_cli.web_server as web_server
     import tui_gateway.server as gateway_server
