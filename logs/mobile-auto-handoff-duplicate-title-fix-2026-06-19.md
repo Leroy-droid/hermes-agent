@@ -38,3 +38,5 @@ Backend compile passed.
 Mobile session endpoint tests passed.
 
 Whitespace diff check passed.
+
+The live local mobile handoff route returned 200 with a temporary scoped mobile token, then the temporary token was revoked.
