@@ -1256,17 +1256,40 @@ def create_mobile_live_session(title: str = "Mobile Session") -> dict:
     }
 
 
-def _unique_mobile_handoff_title(db, desired_title: str, session_id: str) -> str:
-    """Return a handoff title that will pass SessionDB's uniqueness constraint."""
+def _base_mobile_handoff_title(desired_title: str) -> str:
+    """Normalize a mobile handoff title before adding uniqueness suffixes."""
     base = str(desired_title or "Mobile handoff").strip() or "Mobile handoff"
-    base = base[:100]
-    for index in range(1, 100):
+    handoff_marker = " — mobile handoff"
+    while base.endswith(f"{handoff_marker}{handoff_marker}"):
+        base = base[: -len(handoff_marker)].strip()
+    return base[:100]
+
+
+def _unique_mobile_handoff_title(db, desired_title: str, session_id: str, start_index: int = 1) -> str:
+    """Return a handoff title that will pass SessionDB's uniqueness constraint."""
+    base = _base_mobile_handoff_title(desired_title)
+    for index in range(max(1, start_index), 100):
         suffix = "" if index == 1 else f" #{index}"
         candidate = f"{base[:100 - len(suffix)]}{suffix}"
         existing = db.get_session_by_title(candidate)
         if not existing or existing.get("id") == session_id:
             return candidate
     return f"{base[:91]} #{uuid.uuid4().hex[:6]}"
+
+
+def _set_unique_mobile_handoff_title(db, session_id: str, desired_title: str) -> str:
+    """Persist a unique handoff title, retrying if another session wins the race."""
+    for index in range(1, 100):
+        candidate = _unique_mobile_handoff_title(db, desired_title, session_id, start_index=index)
+        try:
+            db.set_session_title(session_id, candidate)
+            return candidate
+        except ValueError as exc:
+            if "already in use" not in str(exc):
+                raise
+    fallback = f"{_base_mobile_handoff_title(desired_title)[:91]} #{uuid.uuid4().hex[:6]}"
+    db.set_session_title(session_id, fallback)
+    return fallback
 
 
 def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> dict:
@@ -1293,11 +1316,7 @@ def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> di
         return {"ok": False, "status_code": 409, "detail": limit_message}
     try:
         current_title = db.get_session_title(requested) or found.get("title") or "session"
-        handoff_title = _unique_mobile_handoff_title(
-            db,
-            title or f"{current_title} — mobile handoff",
-            new_key,
-        )
+        desired_handoff_title = title or f"{current_title} — mobile handoff"
         db.create_session(
             new_key,
             source="tui",
@@ -1316,7 +1335,7 @@ def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> di
             role="system",
             content="Mobile handoff session created from native iPhone/iPad. Continue from the copied conversation context above.",
         )
-        db.set_session_title(new_key, handoff_title)
+        handoff_title = _set_unique_mobile_handoff_title(db, new_key, desired_handoff_title)
         tokens = _set_session_context(new_key)
         try:
             agent = _make_agent(new_sid, new_key, session_id=new_key)

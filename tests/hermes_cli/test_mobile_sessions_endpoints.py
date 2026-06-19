@@ -493,6 +493,51 @@ def test_unique_mobile_handoff_title_keeps_titles_under_session_limit():
     assert len(title) <= 100
 
 
+def test_unique_mobile_handoff_title_does_not_stack_handoff_suffix():
+    import tui_gateway.server as gateway_server
+
+    class FakeDB:
+        def get_session_by_title(self, _title):
+            return None
+
+    title = gateway_server._unique_mobile_handoff_title(
+        FakeDB(),
+        "Existing Chat — mobile handoff — mobile handoff",
+        "new-session",
+    )
+
+    assert title == "Existing Chat — mobile handoff"
+
+
+def test_set_unique_mobile_handoff_title_retries_title_race():
+    import tui_gateway.server as gateway_server
+
+    class FakeDB:
+        def __init__(self):
+            self.saved = []
+
+        def get_session_by_title(self, title):
+            if title == "Existing Chat — mobile handoff":
+                return None
+            return None
+
+        def set_session_title(self, _session_id, title):
+            self.saved.append(title)
+            if title == "Existing Chat — mobile handoff":
+                raise ValueError("Title 'Existing Chat — mobile handoff' is already in use by session old-1")
+            return True
+
+    db = FakeDB()
+    title = gateway_server._set_unique_mobile_handoff_title(
+        db,
+        "new-session",
+        "Existing Chat — mobile handoff",
+    )
+
+    assert title == "Existing Chat — mobile handoff #2"
+    assert db.saved == ["Existing Chat — mobile handoff", "Existing Chat — mobile handoff #2"]
+
+
 def test_handoff_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_client):
     import hermes_cli.web_server as web_server
     import tui_gateway.server as gateway_server
