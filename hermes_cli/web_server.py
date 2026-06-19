@@ -191,7 +191,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
-_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume"})
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff"})
 _MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 
@@ -210,6 +210,8 @@ def _is_mobile_token_readonly_path(path: str, method: str = "GET") -> bool:
 def _is_mobile_token_send_path(path: str, method: str = "POST") -> bool:
     if method.upper() != "POST":
         return False
+    if path.rstrip("/") == _MOBILE_TOKEN_SEND_PREFIX.rstrip("/"):
+        return True
     return path.startswith(_MOBILE_TOKEN_SEND_PREFIX) and any(
         path.endswith(suffix) for suffix in _MOBILE_TOKEN_SEND_SUFFIXES
     )
@@ -6768,6 +6770,14 @@ class MobileSessionMessageSend(BaseModel):
     text: str
 
 
+class MobileSessionCreate(BaseModel):
+    title: Optional[str] = None
+
+
+class MobileSessionHandoff(BaseModel):
+    title: Optional[str] = None
+
+
 class MobileSessionUploadSend(BaseModel):
     filename: str
     content_type: Optional[str] = None
@@ -6917,6 +6927,39 @@ async def check_mobile_auth(request: Request):
     }
 
 
+
+@app.post("/api/mobile/sessions")
+async def create_mobile_session(request: Request, body: MobileSessionCreate = MobileSessionCreate()):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.create_mobile_live_session(body.title or "Mobile Session")
+    except Exception:
+        _log.exception("POST /api/mobile/sessions failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile session create failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "idle"),
+        "session_id": result.get("session_id", ""),
+        "live_session_id": result.get("live_session_id", ""),
+        "title": result.get("title", "Mobile Session"),
+        "message_count": int(result.get("message_count") or 0),
+        "is_mobile_sendable": bool(result.get("is_mobile_sendable")),
+        "mobile_send_unavailable_reason": str(result.get("mobile_send_unavailable_reason") or ""),
+        "device": _mobile_device_payload(record),
+    }
+
 @app.post("/api/mobile/sessions/{session_id}/resume")
 async def resume_mobile_live_session(request: Request, session_id: str):
     record = getattr(request.state, "mobile_device", None)
@@ -6948,6 +6991,40 @@ async def resume_mobile_live_session(request: Request, session_id: str):
         "device": _mobile_device_payload(record),
     }
 
+
+
+@app.post("/api/mobile/sessions/{session_id}/handoff")
+async def handoff_mobile_session(request: Request, session_id: str, body: MobileSessionHandoff = MobileSessionHandoff()):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+    try:
+        import importlib
+
+        gateway_server = importlib.import_module("tui_gateway.server")
+        result = gateway_server.create_mobile_handoff_session(session_id, body.title or "")
+    except Exception:
+        _log.exception("POST /api/mobile/sessions/{session_id}/handoff failed")
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not result.get("ok"):
+        raise HTTPException(
+            status_code=int(result.get("status_code") or 500),
+            detail=str(result.get("detail") or "mobile handoff failed"),
+        )
+    return {
+        "ok": True,
+        "status": result.get("status", "idle"),
+        "session_id": result.get("session_id", ""),
+        "live_session_id": result.get("live_session_id", ""),
+        "title": result.get("title", "Mobile handoff"),
+        "parent_session_id": result.get("parent_session_id", session_id),
+        "message_count": int(result.get("message_count") or 0),
+        "is_mobile_sendable": bool(result.get("is_mobile_sendable")),
+        "mobile_send_unavailable_reason": str(result.get("mobile_send_unavailable_reason") or ""),
+        "device": _mobile_device_payload(record),
+    }
 
 @app.post("/api/mobile/sessions/{session_id}/uploads")
 async def upload_mobile_session_attachment(request: Request, session_id: str, body: MobileSessionUploadSend):

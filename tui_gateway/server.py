@@ -1214,6 +1214,119 @@ def submit_mobile_prompt_to_live_session(stored_session_id: str, text: str) -> d
     }
 
 
+
+def create_mobile_live_session(title: str = "Mobile Session") -> dict:
+    """Create and persist a new live desktop session for native mobile clients."""
+    handler = _methods.get("session.create")
+    if handler is None:
+        return {"ok": False, "status_code": 500, "detail": "session.create unavailable"}
+    cleaned_title = str(title or "Mobile Session").strip()[:80] or "Mobile Session"
+    rid = f"mobile_new_{uuid.uuid4().hex[:12]}"
+    try:
+        response = handler(rid, {"title": cleaned_title})
+    except Exception:
+        logger.exception("create_mobile_live_session failed")
+        return {"ok": False, "status_code": 500, "detail": "Internal server error"}
+    error = response.get("error") if isinstance(response, dict) else None
+    if error:
+        code = int(error.get("code") or 5000)
+        return {"ok": False, "status_code": 409 if code == 4090 else 500, "detail": str(error.get("message") or "mobile session create failed")}
+    result = response.get("result") if isinstance(response, dict) else None
+    if not isinstance(result, dict):
+        return {"ok": False, "status_code": 500, "detail": "invalid session.create response"}
+    live_sid = str(result.get("session_id") or "")
+    stored_sid = str(result.get("stored_session_id") or result.get("session_key") or "")
+    with _sessions_lock:
+        session = _sessions.get(live_sid)
+    if session is not None:
+        _ensure_session_db_row(session)
+        with _session_db(session) as db:
+            if db is not None:
+                with contextlib.suppress(Exception):
+                    db.set_session_title(stored_sid, cleaned_title)
+    return {
+        "ok": True,
+        "status": "idle",
+        "session_id": stored_sid,
+        "live_session_id": live_sid,
+        "title": cleaned_title,
+        "message_count": 0,
+        "is_mobile_sendable": True,
+        "mobile_send_unavailable_reason": "",
+    }
+
+
+def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> dict:
+    """Branch a stored session into a new live mobile handoff session."""
+    requested = str(stored_session_id or "").strip()
+    if not requested:
+        return {"ok": False, "status_code": 400, "detail": "session_id required"}
+    db = _get_db()
+    if db is None:
+        return {"ok": False, "status_code": 500, "detail": "session database unavailable"}
+    found = db.get_session(requested)
+    if not found:
+        return {"ok": False, "status_code": 404, "detail": "session not found"}
+    try:
+        history = db.get_messages_as_conversation(requested)
+    except Exception as e:
+        return {"ok": False, "status_code": 500, "detail": f"handoff failed: {e}"}
+    if not history:
+        return create_mobile_live_session(title or "Mobile Session")
+    new_key = _new_session_key()
+    new_sid = uuid.uuid4().hex[:8]
+    lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
+    if limit_message is not None:
+        return {"ok": False, "status_code": 409, "detail": limit_message}
+    try:
+        current_title = db.get_session_title(requested) or found.get("title") or "session"
+        handoff_title = str(title or f"{current_title} — mobile handoff").strip()[:120]
+        db.create_session(
+            new_key,
+            source="tui",
+            model=_resolve_model(),
+            model_config={"_mobile_handoff_from": requested},
+            parent_session_id=requested,
+        )
+        for msg in history:
+            db.append_message(
+                session_id=new_key,
+                role=msg.get("role", "user"),
+                content=msg.get("content"),
+            )
+        db.append_message(
+            session_id=new_key,
+            role="system",
+            content="Mobile handoff session created from native iPhone/iPad. Continue from the copied conversation context above.",
+        )
+        db.set_session_title(new_key, handoff_title)
+        tokens = _set_session_context(new_key)
+        try:
+            agent = _make_agent(new_sid, new_key, session_id=new_key)
+        finally:
+            _clear_session_context(tokens)
+        _init_session(new_sid, new_key, agent, list(history), cols=80)
+        with _sessions_lock:
+            if new_sid in _sessions:
+                _sessions[new_sid]["active_session_lease"] = lease
+                _sessions[new_sid]["pending_title"] = handoff_title
+    except Exception as e:
+        if lease is not None:
+            lease.release()
+        logger.exception("create_mobile_handoff_session failed")
+        return {"ok": False, "status_code": 500, "detail": f"handoff failed: {e}"}
+    return {
+        "ok": True,
+        "status": "idle",
+        "session_id": new_key,
+        "live_session_id": new_sid,
+        "title": handoff_title,
+        "parent_session_id": requested,
+        "message_count": len(history),
+        "is_mobile_sendable": True,
+        "mobile_send_unavailable_reason": "",
+    }
+
 def _normalize_completion_path(path_part: str) -> str:
     expanded = os.path.expanduser(path_part)
     if os.name != "nt":

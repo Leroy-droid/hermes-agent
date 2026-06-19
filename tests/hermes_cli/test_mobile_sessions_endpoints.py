@@ -385,3 +385,108 @@ def test_prepare_mobile_live_session_is_idempotent_for_existing_live_session(mon
         {"session_id": "stored-session", "lazy": True},
         {"session_id": "stored-session", "lazy": True},
     ]
+
+
+def test_mobile_send_path_allows_new_session_and_handoff_routes():
+    from hermes_cli.web_server import _is_mobile_token_send_path
+
+    assert _is_mobile_token_send_path("/api/mobile/sessions", "POST") is True
+    assert _is_mobile_token_send_path("/api/mobile/sessions/abc/handoff", "POST") is True
+    assert _is_mobile_token_send_path("/api/mobile/sessions/abc/uploads", "POST") is False
+    assert _is_mobile_token_send_path("/api/mobile/sessions", "GET") is False
+
+
+def test_create_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_client):
+    import hermes_cli.web_server as web_server
+    import tui_gateway.server as gateway_server
+    from types import SimpleNamespace
+
+    fake_record = SimpleNamespace(
+        device_id="device-1",
+        device_name="Leroy iPhone",
+        platform="ios",
+        scopes=["sessions:read", "messages:send"],
+        created_at=1.0,
+        last_seen_at=2.0,
+        revoked_at=None,
+        active=True,
+    )
+
+    def fake_has_mobile_token(request, required_scope="sessions:read"):
+        request.state.mobile_device = fake_record
+        return required_scope == "messages:send"
+
+    monkeypatch.setattr(web_server, "_has_valid_mobile_token", fake_has_mobile_token)
+    monkeypatch.setattr(
+        gateway_server,
+        "create_mobile_live_session",
+        lambda title: {
+            "ok": True,
+            "status": "idle",
+            "session_id": "stored-new",
+            "live_session_id": "live-new",
+            "title": title,
+            "message_count": 0,
+            "is_mobile_sendable": True,
+            "mobile_send_unavailable_reason": "",
+        },
+    )
+
+    resp = dashboard_client.post("/api/mobile/sessions", json={"title": "Mobile Test"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["session_id"] == "stored-new"
+    assert data["live_session_id"] == "live-new"
+    assert data["title"] == "Mobile Test"
+    assert data["is_mobile_sendable"] is True
+    assert data["device"]["device_id"] == "device-1"
+
+
+def test_handoff_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_client):
+    import hermes_cli.web_server as web_server
+    import tui_gateway.server as gateway_server
+    from types import SimpleNamespace
+
+    fake_record = SimpleNamespace(
+        device_id="device-1",
+        device_name="Leroy iPhone",
+        platform="ios",
+        scopes=["sessions:read", "messages:send"],
+        created_at=1.0,
+        last_seen_at=2.0,
+        revoked_at=None,
+        active=True,
+    )
+
+    def fake_has_mobile_token(request, required_scope="sessions:read"):
+        request.state.mobile_device = fake_record
+        return required_scope == "messages:send"
+
+    monkeypatch.setattr(web_server, "_has_valid_mobile_token", fake_has_mobile_token)
+    monkeypatch.setattr(
+        gateway_server,
+        "create_mobile_handoff_session",
+        lambda session_id, title: {
+            "ok": True,
+            "status": "idle",
+            "session_id": "stored-handoff",
+            "live_session_id": "live-handoff",
+            "title": title or "Old — mobile handoff",
+            "parent_session_id": session_id,
+            "message_count": 8,
+            "is_mobile_sendable": True,
+            "mobile_send_unavailable_reason": "",
+        },
+    )
+
+    resp = dashboard_client.post("/api/mobile/sessions/old-session/handoff", json={})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["session_id"] == "stored-handoff"
+    assert data["live_session_id"] == "live-handoff"
+    assert data["parent_session_id"] == "old-session"
+    assert data["message_count"] == 8
