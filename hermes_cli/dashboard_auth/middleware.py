@@ -37,7 +37,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
-_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff"})
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff", "/title"})
 _MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 

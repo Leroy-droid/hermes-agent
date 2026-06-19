@@ -191,7 +191,7 @@ _MOBILE_TOKEN_READONLY_PATHS: frozenset[str] = frozenset({
 })
 _MOBILE_TOKEN_SESSION_DETAIL_PREFIX = "/api/sessions/"
 _MOBILE_TOKEN_SEND_PREFIX = "/api/mobile/sessions/"
-_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff"})
+_MOBILE_TOKEN_SEND_SUFFIXES: frozenset[str] = frozenset({"/messages", "/resume", "/handoff", "/title"})
 _MOBILE_TOKEN_UPLOAD_SUFFIXES: frozenset[str] = frozenset({"/uploads"})
 
 
@@ -6778,6 +6778,10 @@ class MobileSessionHandoff(BaseModel):
     title: Optional[str] = None
 
 
+class MobileSessionRename(BaseModel):
+    title: str
+
+
 class MobileSessionUploadSend(BaseModel):
     filename: str
     content_type: Optional[str] = None
@@ -7025,6 +7029,33 @@ async def handoff_mobile_session(request: Request, session_id: str, body: Mobile
         "mobile_send_unavailable_reason": str(result.get("mobile_send_unavailable_reason") or ""),
         "device": _mobile_device_payload(record),
     }
+
+@app.post("/api/mobile/sessions/{session_id}/title")
+async def rename_mobile_session(request: Request, session_id: str, body: MobileSessionRename):
+    record = getattr(request.state, "mobile_device", None)
+    if record is None:
+        if not _has_valid_mobile_token(request, required_scope="messages:send"):
+            raise HTTPException(status_code=401, detail="Unauthorized")
+        record = getattr(request.state, "mobile_device", None)
+
+    db = _open_session_db_for_profile(None)
+    try:
+        sid = db.resolve_session_id(session_id)
+        if not sid:
+            raise HTTPException(status_code=404, detail="Session not found")
+        try:
+            db.set_session_title(sid, body.title or "")
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        return {
+            "ok": True,
+            "session_id": sid,
+            "title": db.get_session_title(sid) or "",
+            "device": _mobile_device_payload(record),
+        }
+    finally:
+        db.close()
+
 
 @app.post("/api/mobile/sessions/{session_id}/uploads")
 async def upload_mobile_session_attachment(request: Request, session_id: str, body: MobileSessionUploadSend):

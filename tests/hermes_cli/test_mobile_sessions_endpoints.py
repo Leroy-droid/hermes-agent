@@ -401,6 +401,7 @@ def test_dashboard_auth_mobile_send_path_allows_new_session_and_handoff_routes()
 
     assert _is_mobile_token_send_path("/api/mobile/sessions", "POST") is True
     assert _is_mobile_token_send_path("/api/mobile/sessions/abc/handoff", "POST") is True
+    assert _is_mobile_token_send_path("/api/mobile/sessions/abc/title", "POST") is True
     assert _is_mobile_token_send_path("/api/mobile/sessions/abc/uploads", "POST") is False
     assert _is_mobile_token_send_path("/api/mobile/sessions", "GET") is False
 
@@ -584,6 +585,50 @@ def test_handoff_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_cli
     assert data["live_session_id"] == "live-handoff"
     assert data["parent_session_id"] == "old-session"
     assert data["message_count"] == 8
+
+
+def test_rename_mobile_session_endpoint_updates_title(monkeypatch, dashboard_client, tmp_path):
+    import hermes_cli.web_server as web_server
+    from hermes_state import SessionDB
+    from types import SimpleNamespace
+
+    db_path = tmp_path / "state.db"
+    db = SessionDB(db_path)
+    try:
+        db.create_session(session_id="rename-mobile", source="cli")
+    finally:
+        db.close()
+
+    fake_record = SimpleNamespace(
+        device_id="device-1",
+        device_name="Leroy iPhone",
+        platform="ios",
+        scopes=["sessions:read", "messages:send"],
+        created_at=1.0,
+        last_seen_at=2.0,
+        revoked_at=None,
+        active=True,
+    )
+
+    def fake_has_mobile_token(request, required_scope="sessions:read"):
+        request.state.mobile_device = fake_record
+        return required_scope == "messages:send"
+
+    monkeypatch.setattr(web_server, "_has_valid_mobile_token", fake_has_mobile_token)
+    monkeypatch.setattr(web_server, "_open_session_db_for_profile", lambda _profile: SessionDB(db_path))
+
+    resp = dashboard_client.post("/api/mobile/sessions/rename-mobile/title", json={"title": "Renamed from iPhone"})
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["session_id"] == "rename-mobile"
+    assert data["title"] == "Renamed from iPhone"
+    db = SessionDB(db_path)
+    try:
+        assert db.get_session_title("rename-mobile") == "Renamed from iPhone"
+    finally:
+        db.close()
 
 
 def test_create_mobile_handoff_session_uses_compact_seed(monkeypatch):
