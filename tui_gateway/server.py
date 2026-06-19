@@ -1256,6 +1256,19 @@ def create_mobile_live_session(title: str = "Mobile Session") -> dict:
     }
 
 
+def _unique_mobile_handoff_title(db, desired_title: str, session_id: str) -> str:
+    """Return a handoff title that will pass SessionDB's uniqueness constraint."""
+    base = str(desired_title or "Mobile handoff").strip() or "Mobile handoff"
+    base = base[:100]
+    for index in range(1, 100):
+        suffix = "" if index == 1 else f" #{index}"
+        candidate = f"{base[:100 - len(suffix)]}{suffix}"
+        existing = db.get_session_by_title(candidate)
+        if not existing or existing.get("id") == session_id:
+            return candidate
+    return f"{base[:91]} #{uuid.uuid4().hex[:6]}"
+
+
 def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> dict:
     """Branch a stored session into a new live mobile handoff session."""
     requested = str(stored_session_id or "").strip()
@@ -1280,7 +1293,11 @@ def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> di
         return {"ok": False, "status_code": 409, "detail": limit_message}
     try:
         current_title = db.get_session_title(requested) or found.get("title") or "session"
-        handoff_title = str(title or f"{current_title} — mobile handoff").strip()[:120]
+        handoff_title = _unique_mobile_handoff_title(
+            db,
+            title or f"{current_title} — mobile handoff",
+            new_key,
+        )
         db.create_session(
             new_key,
             source="tui",

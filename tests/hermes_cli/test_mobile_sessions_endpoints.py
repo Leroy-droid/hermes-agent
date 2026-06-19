@@ -453,6 +453,46 @@ def test_create_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_clie
     assert data["device"]["device_id"] == "device-1"
 
 
+def test_unique_mobile_handoff_title_adds_suffix_for_duplicate_title():
+    import tui_gateway.server as gateway_server
+
+    class FakeDB:
+        def __init__(self):
+            self.titles = {
+                "Existing Chat — mobile handoff": {"id": "old-1"},
+            }
+
+        def get_session_by_title(self, title):
+            return self.titles.get(title)
+
+    title = gateway_server._unique_mobile_handoff_title(
+        FakeDB(),
+        "Existing Chat — mobile handoff",
+        "new-session",
+    )
+
+    assert title == "Existing Chat — mobile handoff #2"
+
+
+def test_unique_mobile_handoff_title_keeps_titles_under_session_limit():
+    import tui_gateway.server as gateway_server
+
+    class FakeDB:
+        def get_session_by_title(self, title):
+            if title.endswith(" #2"):
+                return None
+            return {"id": "old-1"}
+
+    title = gateway_server._unique_mobile_handoff_title(
+        FakeDB(),
+        "A" * 140,
+        "new-session",
+    )
+
+    assert title.endswith(" #2")
+    assert len(title) <= 100
+
+
 def test_handoff_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_client):
     import hermes_cli.web_server as web_server
     import tui_gateway.server as gateway_server
