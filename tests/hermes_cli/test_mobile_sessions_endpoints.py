@@ -584,3 +584,83 @@ def test_handoff_mobile_session_endpoint_uses_gateway(monkeypatch, dashboard_cli
     assert data["live_session_id"] == "live-handoff"
     assert data["parent_session_id"] == "old-session"
     assert data["message_count"] == 8
+
+
+def test_create_mobile_handoff_session_uses_compact_seed(monkeypatch):
+    import tui_gateway.server as gateway_server
+
+    class FakeDB:
+        def __init__(self):
+            self.created = []
+            self.appended = []
+            self.titles = {"source": "Long Chat"}
+
+        def get_session(self, session_id):
+            return {"id": session_id, "title": "Long Chat"} if session_id == "source" else None
+
+        def get_session_title(self, session_id):
+            return self.titles.get(session_id)
+
+        def get_session_by_title(self, _title):
+            return None
+
+        def get_messages_as_conversation(self, _session_id):
+            return [
+                {"role": "user", "content": "Original request"},
+                {"role": "assistant", "content": "Detailed answer"},
+                {"role": "tool", "content": "noisy tool output that should not be cloned"},
+                {"role": "user", "content": "Continue from here"},
+            ]
+
+        def create_session(self, *args, **kwargs):
+            self.created.append((args, kwargs))
+
+        def append_message(self, **kwargs):
+            self.appended.append(kwargs)
+
+        def set_session_title(self, session_id, title):
+            self.titles[session_id] = title
+            return True
+
+    fake_db = FakeDB()
+    captured = {}
+
+    def fake_create(_rid, params):
+        captured.update(params)
+        with gateway_server._sessions_lock:
+            gateway_server._sessions["live-new"] = {"session_key": "stored-new"}
+        return {
+            "jsonrpc": "2.0",
+            "id": "unused",
+            "result": {"session_id": "live-new", "stored_session_id": "stored-new"},
+        }
+
+    monkeypatch.setattr(gateway_server, "_get_db", lambda: fake_db)
+    monkeypatch.setitem(gateway_server._methods, "session.create", fake_create)
+    try:
+        result = gateway_server.create_mobile_handoff_session("source")
+    finally:
+        with gateway_server._sessions_lock:
+            gateway_server._sessions.pop("live-new", None)
+
+    assert result["ok"] is True
+    assert result["session_id"] == "stored-new"
+    assert result["live_session_id"] == "live-new"
+    assert result["parent_session_id"] == "source"
+    assert result["message_count"] == 1
+    assert result["source_message_count"] == 3
+
+    seed_messages = captured["messages"]
+    assert len(seed_messages) == 2
+    assert seed_messages[0]["role"] == "system"
+    assert seed_messages[0]["_mobile_hidden"] is True
+    assert "Original request" in seed_messages[0]["content"]
+    assert "noisy tool output" not in seed_messages[0]["content"]
+    assert seed_messages[1] == {
+        "role": "assistant",
+        "content": "Handoff complete. Ready to continue in this chat.",
+    }
+
+    assert len(fake_db.appended) == 2
+    assert [message["role"] for message in fake_db.appended] == ["system", "assistant"]
+    assert fake_db.created[0][1]["parent_session_id"] == "source"

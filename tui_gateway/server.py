@@ -1293,7 +1293,13 @@ def _set_unique_mobile_handoff_title(db, session_id: str, desired_title: str) ->
 
 
 def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> dict:
-    """Branch a stored session into a new live mobile handoff session."""
+    """Create a compact live mobile handoff session from a stored session.
+
+    This mirrors the desktop/mobile ``session.handoff_create`` path: seed the
+    new session with a private compact handoff packet instead of cloning the
+    full transcript. The source transcript stays in state.db; the new live
+    session gets only enough continuity context to continue efficiently.
+    """
     requested = str(stored_session_id or "").strip()
     if not requested:
         return {"ok": False, "status_code": 400, "detail": "session_id required"}
@@ -1309,46 +1315,61 @@ def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> di
         return {"ok": False, "status_code": 500, "detail": f"handoff failed: {e}"}
     if not history:
         return create_mobile_live_session(title or "Mobile Session")
-    new_key = _new_session_key()
-    new_sid = uuid.uuid4().hex[:8]
-    lease, limit_message = _claim_active_session_slot(new_key, live_session_id=new_sid)
-    if limit_message is not None:
-        return {"ok": False, "status_code": 409, "detail": limit_message}
+
+    handler = _methods.get("session.create")
+    if handler is None:
+        return {"ok": False, "status_code": 500, "detail": "session.create unavailable"}
+
     try:
         current_title = db.get_session_title(requested) or found.get("title") or "session"
         desired_handoff_title = title or f"{current_title} — mobile handoff"
+        draft_title = _unique_mobile_handoff_title(db, desired_handoff_title, "")
+        handoff = _mobile_handoff_context(history, "mobile continuation handoff")
+        seed = _mobile_handoff_seed(handoff)
+        starter = "Handoff complete. Ready to continue in this chat."
+        response = handler(
+            f"mobile_handoff_{uuid.uuid4().hex[:12]}",
+            {
+                "title": draft_title,
+                "messages": [
+                    {"role": "system", "content": seed, "_mobile_hidden": True},
+                    {"role": "assistant", "content": starter},
+                ],
+            },
+        )
+        error = response.get("error") if isinstance(response, dict) else None
+        if error:
+            code = int(error.get("code") or 5000)
+            return {
+                "ok": False,
+                "status_code": 409 if code == 4090 else 500,
+                "detail": str(error.get("message") or "handoff create failed"),
+            }
+        result = response.get("result") if isinstance(response, dict) else None
+        if not isinstance(result, dict):
+            return {"ok": False, "status_code": 500, "detail": "invalid session.create response"}
+
+        new_sid = str(result.get("session_id") or "")
+        new_key = str(result.get("stored_session_id") or result.get("session_key") or "")
+        if not new_sid or not new_key:
+            return {"ok": False, "status_code": 500, "detail": "invalid session.create response"}
+
         db.create_session(
             new_key,
             source="tui",
             model=_resolve_model(),
-            model_config={"_mobile_handoff_from": requested},
+            model_config={"_mobile_handoff_from": requested, "_mobile_handoff_compact": True},
             parent_session_id=requested,
         )
-        for msg in history:
-            db.append_message(
-                session_id=new_key,
-                role=msg.get("role", "user"),
-                content=msg.get("content"),
-            )
-        db.append_message(
-            session_id=new_key,
-            role="system",
-            content="Mobile handoff session created from native iPhone/iPad. Continue from the copied conversation context above.",
-        )
+        db.append_message(session_id=new_key, role="system", content=seed)
+        db.append_message(session_id=new_key, role="assistant", content=starter)
         handoff_title = _set_unique_mobile_handoff_title(db, new_key, desired_handoff_title)
-        tokens = _set_session_context(new_key)
-        try:
-            agent = _make_agent(new_sid, new_key, session_id=new_key)
-        finally:
-            _clear_session_context(tokens)
-        _init_session(new_sid, new_key, agent, list(history), cols=80)
         with _sessions_lock:
-            if new_sid in _sessions:
-                _sessions[new_sid]["active_session_lease"] = lease
-                _sessions[new_sid]["pending_title"] = handoff_title
+            live_session = _sessions.get(new_sid)
+            if live_session is not None:
+                live_session["pending_title"] = handoff_title
+                live_session["mobile_handoff_from"] = requested
     except Exception as e:
-        if lease is not None:
-            lease.release()
         logger.exception("create_mobile_handoff_session failed")
         return {"ok": False, "status_code": 500, "detail": f"handoff failed: {e}"}
     return {
@@ -1358,7 +1379,9 @@ def create_mobile_handoff_session(stored_session_id: str, title: str = "") -> di
         "live_session_id": new_sid,
         "title": handoff_title,
         "parent_session_id": requested,
-        "message_count": len(history),
+        "message_count": 1,
+        "source_message_count": int(handoff.get("source_message_count") or 0),
+        "handoff_summary": str(handoff.get("summary") or ""),
         "is_mobile_sendable": True,
         "mobile_send_unavailable_reason": "",
     }
