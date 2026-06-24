@@ -3165,3 +3165,327 @@ code { font-size: 0.875rem; }
 :root[style*="--theme-asset-bg:"] .theme-default-filler {
   display: none;
 }
+
+/* Native iPhone framing pass for the V2 Sessions command center. The app should
+   use the full iPhone 17 Pro Max viewport (440 × 956 pt / 1320 × 2868 px) and
+   respect the hardware corners with safe-area/content insets. Do not mask the
+   root app surface: iOS/Simulator/device bezels own the physical screen curve. */
+@media (max-width: 639px) {
+  html:has([data-force-mobile-surface="true"]),
+  body:has([data-force-mobile-surface="true"]),
+  #root:has([data-force-mobile-surface="true"]),
+  html:has([data-force-mobile-sessions="true"]),
+  body:has([data-force-mobile-sessions="true"]),
+  #root:has([data-force-mobile-sessions="true"]) {
+    background: #111412 !important;
+  }
+
+  [data-force-mobile-surface="true"],
+  [data-mobile-surface-route="true"] {
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    min-height: 100dvh !important;
+    overflow: hidden !important;
+  }
+
+  [data-force-mobile-surface="true"] .hermes-mobile-app,
+  [data-mobile-surface-route="true"] .hermes-mobile-app {
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    min-height: 100dvh !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background-clip: padding-box !important;
+    clip-path: none !important;
+    box-shadow: none !important;
+  }
+
+  [data-force-mobile-sessions="true"].hermes-mobile-sessions-shell {
+    flex: 1 1 auto !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    min-height: 100dvh !important;
+    margin: 0 !important;
+    border: 0 !important;
+    border-radius: 0 !important;
+    background-clip: padding-box !important;
+    clip-path: none !important;
+    box-shadow:
+      inset 0 0 0 1px rgba(255, 255, 255, 0.018) !important;
+  }
+
+  [data-force-mobile-sessions="true"] .hermes-mobile-sessions-header {
+    grid-template-columns: 2.25rem minmax(0, 1fr) 2.25rem !important;
+    height: calc(3.15rem + env(safe-area-inset-top, 0px)) !important;
+    padding-left: 1.28rem !important;
+    padding-right: 1.28rem !important;
+  }
+
+  [data-force-mobile-sessions="true"] .hermes-mobile-sessions-header .hermes-mobile-back-button {
+    width: 2.25rem !important;
+    height: 2.25rem !important;
+    font-size: 1.55rem !important;
+  }
+
+  [data-force-mobile-sessions="true"] .hermes-mobile-sessions-header .hermes-mobile-shield {
+    width: 1.6rem !important;
+    height: 1.6rem !important;
+  }
+
+  [data-force-mobile-sessions="true"] .hermes-mobile-sessions-header .hermes-mobile-shield svg {
+    width: 0.92rem !important;
+    height: 0.92rem !important;
+  }
+
+  [data-force-mobile-sessions="true"] .hermes-mobile-sessions-header span.truncate {
+    font-size: 0.98rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-sessions-scroll {
+    gap: 0.55rem !important;
+    padding: 0.7rem 1.05rem 0.75rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-attention-inbox {
+    gap: 0.42rem !important;
+    margin-bottom: 0.38rem !important;
+    border-radius: 0.96rem !important;
+    padding: 0.56rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-attention-icon {
+    width: 1.9rem !important;
+    height: 1.9rem !important;
+    flex-basis: 1.9rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-attention-row {
+    min-height: 2.58rem !important;
+    gap: 0.55rem !important;
+    border-radius: 0.82rem !important;
+    padding: 0.42rem 0.58rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-pinned-glass {
+    margin-bottom: 0.42rem !important;
+    padding: 0.2rem 0 !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-grid {
+    gap: 0.48rem !important;
+    margin: 0 -0.48rem !important;
+    padding: 0 0.48rem 0.05rem !important;
+    scroll-padding: 0.48rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-page {
+    gap: 0.42rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-pinned-glass button.hermes-mobile-pinned-card {
+    min-height: 4.24rem !important;
+    padding: 0.64rem 0.72rem !important;
+    gap: 0.26rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-card-title .font-mondwest {
+    font-size: 0.88rem !important;
+    line-height: 1.2 !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-pinned-card-meta {
+    font-size: 0.72rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-ios-session-list {
+    gap: 0.42rem !important;
+    margin-top: -0.1rem !important;
+    padding: 0.5rem 0 calc(5.5rem + env(safe-area-inset-bottom, 0px) + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+    scroll-padding-block: 2.1rem calc(5.2rem + env(safe-area-inset-bottom, 0px) + var(--hermes-mobile-keyboard-inset, 0px)) !important;
+    mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      rgba(0, 0, 0, 0.24) 0.38rem,
+      #000 1.35rem,
+      #000 calc(100% - 5.5rem - env(safe-area-inset-bottom, 0px)),
+      transparent 100%
+    ) !important;
+    -webkit-mask-image: linear-gradient(
+      to bottom,
+      transparent 0,
+      rgba(0, 0, 0, 0.24) 0.38rem,
+      #000 1.35rem,
+      #000 calc(100% - 5.5rem - env(safe-area-inset-bottom, 0px)),
+      transparent 100%
+    ) !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-ios-session-list > div > div:first-child {
+    min-height: 4.25rem !important;
+    padding: 0.66rem 0.76rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-ios-session-list .font-mondwest {
+    font-size: 0.94rem !important;
+    line-height: 1.28 !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-session-preview {
+    font-size: 0.78rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-mobile-session-meta {
+    margin-top: 0.28rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-glass {
+    padding: 0.5rem 1rem calc(env(safe-area-inset-bottom, 0px) + 10px) !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-glass > div {
+    gap: 0.5rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-glass input {
+    height: 48px !important;
+    border-radius: 1.45rem !important;
+    font-size: 1rem !important;
+    line-height: 1.5rem !important;
+    padding: 0.75rem 1.08rem !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-glass button,
+  .hermes-mobile-sessions-shell .hermes-session-search-icon {
+    flex-basis: 44px !important;
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+  }
+}
+
+@media (max-width: 639px) {
+  .hermes-mobile-sessions-shell .hermes-session-search-glass .hermes-session-composer-plus,
+  .hermes-mobile-sessions-shell .hermes-session-search-glass .hermes-session-composer-mic {
+    flex: 0 0 44px !important;
+    width: 44px !important;
+    height: 44px !important;
+    min-width: 44px !important;
+    max-width: 44px !important;
+    min-height: 44px !important;
+    max-height: 44px !important;
+    border-radius: 9999px !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-composer-plus {
+    border-color: var(--hermes-mobile-line) !important;
+    background: var(--hermes-mobile-field) !important;
+    color: var(--hermes-mobile-text) !important;
+    box-shadow: 0 1px 0 var(--hermes-mobile-line) !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-composer-mic {
+    border-color: color-mix(in srgb, var(--hermes-mobile-green) 45%, transparent) !important;
+    background: var(--hermes-mobile-green) !important;
+    color: #fff !important;
+    box-shadow:
+      0 1px 0 color-mix(in srgb, var(--hermes-mobile-green) 42%, transparent),
+      0 8px 22px color-mix(in srgb, var(--hermes-mobile-green) 20%, transparent) !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-inline-clear {
+    display: grid !important;
+    flex: 0 0 auto !important;
+    width: 32px !important;
+    height: 32px !important;
+    min-width: 32px !important;
+    max-width: 32px !important;
+    min-height: 32px !important;
+    max-height: 32px !important;
+    border: 0 !important;
+    background: color-mix(in srgb, var(--hermes-mobile-text) 8%, transparent) !important;
+    color: var(--hermes-mobile-muted) !important;
+    box-shadow: none !important;
+    padding: 0 !important;
+  }
+
+  .hermes-mobile-sessions-shell .hermes-session-search-inline-action {
+    color: var(--hermes-mobile-green) !important;
+  }
+}
+
+.hermes-mobile-chat-shell .hermes-session-menu {
+  top: calc(100% + 1.35rem) !important;
+}
+
+.hermes-mobile-chat-shell .hermes-session-menu .hermes-mobile-popover-arrow {
+  top: -0.55rem !important;
+  right: 0.9rem !important;
+}
+
+/* Mobile app scroll contract: the native wrapper/page itself must never become
+   the scroll target. Keep each section header/composer permanent, and let only
+   the section content pane scroll. This avoids the intermittent iOS glitch where
+   the whole app drags instead of the sessions/chat content. */
+html:has([data-force-mobile-surface="true"]),
+body:has([data-force-mobile-surface="true"]),
+#root:has([data-force-mobile-surface="true"]),
+html:has([data-force-mobile-sessions="true"]),
+body:has([data-force-mobile-sessions="true"]),
+#root:has([data-force-mobile-sessions="true"]) {
+  width: 100% !important;
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+  touch-action: pan-y !important;
+}
+
+[data-force-mobile-surface="true"] .hermes-mobile-app,
+[data-mobile-surface-route="true"] .hermes-mobile-app,
+[data-force-mobile-sessions="true"].hermes-mobile-sessions-shell {
+  height: 100dvh !important;
+  max-height: 100dvh !important;
+  min-height: 0 !important;
+  overflow: hidden !important;
+  overscroll-behavior: none !important;
+}
+
+.hermes-mobile-app-header,
+.hermes-mobile-sessions-header,
+.hermes-mobile-chat-header,
+.hermes-mobile-composer,
+.hermes-session-search-glass {
+  position: relative !important;
+  z-index: 5 !important;
+  flex: 0 0 auto !important;
+}
+
+.hermes-mobile-chat-scroll,
+.hermes-mobile-sessions-scroll {
+  display: flex !important;
+  flex: 1 1 auto !important;
+  min-height: 0 !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+  overscroll-behavior-y: contain !important;
+  -webkit-overflow-scrolling: touch !important;
+  touch-action: pan-y !important;
+}
+
+[data-force-mobile-sessions="true"] .hermes-mobile-sessions-scroll {
+  padding: 0.7rem 1.05rem 0.75rem !important;
+}
+
+.hermes-mobile-sessions-shell .hermes-ios-session-list {
+  overflow: visible !important;
+  min-height: 0 !important;
+}
